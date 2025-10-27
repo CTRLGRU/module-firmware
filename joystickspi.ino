@@ -7,15 +7,21 @@ joystick module written for the MH-ET attiny88 (88 in a QFN on a breakout board)
 reads the x and y axes of a joystick with the ADC to two bytes, puts whether or not the button was pushed into a third byte and pushes this all
 through SPI when commanded by the received byte for reading, 'R'
 
-note: would like to put whether or not the joystick was pressed into one of the two axes bits but that would reduce the resolution of one of
-the axes by a tiny (literal) bit. might be worth it, I'll look into it
+output format:
+4 bytes, MSB of X axis (first bit transmitted) is the button flag
+B=push button (1 bit)
+X=x axis reading (10 bits)
+Y=y axis reading (10 bits)
+#=unused
 
-identifies itself with the bit 'J' if prompted by the command for identification, 'X'
+B#####XX XXXXXXXX ######YY YYYYYYYY
+
+identifies itself with the byte 'J' if prompted by the command for identification, 'X'
 */
 
 volatile bool received;
 volatile byte dataSPI;
-byte output[3];
+byte output[4];
 
 void setup() {
   pinMode(MISO,OUTPUT);
@@ -41,17 +47,21 @@ void loop() {
     //if something was received and it wasn't a request for identification prepare all the input data for sending over
     else if(dataSPI=='R'){
       //read the x axis
-      output[0] = analogRead(19);
+      int x = analogRead(19);
+      //write the otherwise unused MSB with a flag for whether or not the button in the joystick was pressed
+      if(digitalRead(21)){
+      x |= 0x80;
+      }
+      output[0] = highByte(x);
+      output[1] = lowByte(x);
       //read the y axis
-      output[1] = analogRead(20);
-      //read if the button was pressed
-      output[2] = digitalRead(21);
-      //this might later send a "ready" byte to the central controller but I think the controller can also just wait a couple microseconds
-
-      //send 3 bytes of input data (central controller knows to expect 3 bytes because this is identified as a joystick)
-    for(int i = 0; i < 3; i++){
+      int y = analogRead(20);
+      output[2] = highByte(y);
+      output[3] = lowByte(y);
+      //send 4 bytes of input data (central controller knows to expect 4 bytes because this is identified as a joystick)
+    for(int i = 0; i < 4; i++){
       //wait until a byte's been shifted have been moved
-      while(!received){}
+      while(!received);
       //load the buffer with the right info
       dataSPI=output[i];
     }
