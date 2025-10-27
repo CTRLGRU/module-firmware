@@ -6,7 +6,16 @@
 
 puts 4 buttons into the low 4 bits of a byte and sends it over when prompted with the command for reading, 'R'
 
-identifies itself with the bit 'B' if prompted by the command for identification, 'X'
+output format:
+U=up button
+D=down button
+L=left button
+R=right button
+#= unusued
+
+####UDLR
+
+identifies itself with the byte 'B' if prompted by the command for identification, 'X'
 */
 
 #define received SPSR & _BV(SPIF)
