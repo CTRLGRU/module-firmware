@@ -4,7 +4,7 @@
 /*
 joystick module written for the MH-ET attiny88 (88 in a QFN on a breakout board)
 
-reads the x and y axes of a joystick with the ADC to two bytes, puts whether or not the button was pushed into a third byte and pushes this all
+writes the 10 bits of the x axis, 10 bits of the y axis, and the one bit of the push button to 4 bytes and pushes them all
 through SPI when commanded by the received byte for reading, 'R'
 
 output format:
