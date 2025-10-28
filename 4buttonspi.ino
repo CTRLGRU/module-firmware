@@ -11,9 +11,10 @@ U=up button
 D=down button
 L=left button
 R=right button
+P=parity bit (central wants even parity)
 #= unusued
 
-####UDLR
+P###UDLR
 
 identifies itself with the byte 'B' if prompted by the command for identification, 'X'
 */
@@ -61,6 +62,11 @@ void loop(){
     if(digitalRead(22)){
       output |= _BV(3);
     }
+    //set parity bit
+    if(!output%2){
+      output |= 0x8;
+    }
+
       //send the byte over
     dataSPI=output;
     }
