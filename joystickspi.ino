@@ -4,7 +4,7 @@
 /*
 joystick module written for the MH-ET attiny88 (88 in a QFN on a breakout board)
 
-writes the 10 bits of the x axis, 10 bits of the y axis, and the one bit of the push button to 4 bytes and pushes them all
+reads the x and y axes of a joystick with the ADC to two bytes, puts whether or not the button was pushed into a third byte and pushes this all
 through SPI when commanded by the received byte for reading, 'R'
 
 output format:
@@ -12,6 +12,7 @@ output format:
 B=push button (1 bit)
 X=x axis reading (10 bits)
 Y=y axis reading (10 bits)
+P=parity bit (central controller expects even always)
 #=unused
 
 B#####XX XXXXXXXX ######YY YYYYYYYY
@@ -60,7 +61,12 @@ void loop() {
       output[3] = lowByte(y);
       //send 4 bytes of input data (central controller knows to expect 4 bytes because this is identified as a joystick)
     for(int i = 0; i < 4; i++){
-      //wait until a byte's been shifted have been moved
+      //set parity bit for high bytes (0 and 2) if needed then wait until a byte's been shifted have been moved
+      if(!i%2){
+        if(output[i]%2){
+          output[i] |= 0x40;
+        }
+      }
       while(!received);
       //load the buffer with the right info
       dataSPI=output[i];
