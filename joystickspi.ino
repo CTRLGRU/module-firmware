@@ -61,10 +61,10 @@ void loop() {
       output[3] = lowByte(y);
       //send 4 bytes of input data (central controller knows to expect 4 bytes because this is identified as a joystick)
     for(int i = 0; i < 4; i++){
-      //set parity bit for high bytes (0 and 2) if needed then wait until a byte's been shifted have been moved
-      if(!i%2){
-        if(output[i]%2){
-          output[i] |= 0x40;
+      //set parity bit in high bytes (0 and 2) based on the actual data carrying bytes (1-3) if needed then wait until a byte's been shifted have been moved
+      if(i%2){ //if the byte is 1 or 3
+        if(output[i]%2){ //if the byte isn't divisible by 2 (so byte isn't even)
+          output[i-1] |= 0x40; //set the parity (second highest) bit in the otherwise mostly empty even bytes
         }
       }
       while(!received);
