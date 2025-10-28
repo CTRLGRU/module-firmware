@@ -8,14 +8,14 @@ reads the x and y axes of a joystick with the ADC to two bytes, puts whether or 
 through SPI when commanded by the received byte for reading, 'R'
 
 output format:
-4 bytes, MSB of X axis (first bit transmitted) is the button flag
+4 bytes:
 B=push button (1 bit)
 X=x axis reading (10 bits)
 Y=y axis reading (10 bits)
 P=parity bit (central controller expects even always)
 #=unused
 
-B#####XX XXXXXXXX ######YY YYYYYYYY
+PB####XX XXXXXXXX P#####YY YYYYYYYY
 
 identifies itself with the byte 'J' if prompted by the command for identification, 'X'
 */
@@ -39,11 +39,13 @@ void setup() {
 }
 
 void loop() {
+  //spin until data is received
   while(!received);
     //X is a byte requesting for identification
     if(dataSPI=='X'){
       //ID for joystick ("normal" kind; two axes w/ click)
       dataSPI='J';
+      received = false;
     }
     //if something was received and it wasn't a request for identification prepare all the input data for sending over
     else if(dataSPI=='R'){
@@ -51,27 +53,29 @@ void loop() {
       int x = analogRead(19);
       //write the otherwise unused MSB with a flag for whether or not the button in the joystick was pressed
       if(digitalRead(21)){
-      x |= 0x80;
+      x |= 0x40;
+      }
+      if(x%2){
+        x |=0x80;
       }
       output[0] = highByte(x);
       output[1] = lowByte(x);
       //read the y axis
       int y = analogRead(20);
+      if(y%2){
+        y |=0x80;
+      }
       output[2] = highByte(y);
       output[3] = lowByte(y);
       //send 4 bytes of input data (central controller knows to expect 4 bytes because this is identified as a joystick)
     for(int i = 0; i < 4; i++){
-      //set parity bit in high bytes (0 and 2) based on the actual data carrying bytes (1-3) if needed then wait until a byte's been shifted have been moved
-      if(i%2){ //if the byte is 1 or 3
-        if(output[i]%2){ //if the byte isn't divisible by 2 (so byte isn't even)
-          output[i-1] |= 0x40; //set the parity (second highest) bit in the otherwise mostly empty even bytes
-        }
-      }
+      //spin until the last byte was shifted out
       while(!received);
-      //load the buffer with the right info
+      //load the buffer with a byte to send over
       dataSPI=output[i];
+      received = false;
     }
-  } 
+  }
   //go back to sleep now that it's done
   __asm__ ("sleep");
 }
