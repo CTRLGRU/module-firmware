@@ -15,7 +15,7 @@ Y=y axis reading (10 bits)
 P=parity bit (central controller expects even always)
 #=unused
 
-PB####XX XXXXXXXX P#####YY YYYYYYYY
+PB####XX XXXXXXXX ######YY YYYYYYYY
 
 identifies itself with the byte 'J' if prompted by the command for identification, 'X'
 */
@@ -55,18 +55,25 @@ void loop() {
       if(digitalRead(21)){
       x |= 0x40;
       }
-      if(x%2){
-        x |=0x80;
-      }
       output[0] = highByte(x);
       output[1] = lowByte(x);
       //read the y axis
       int y = analogRead(20);
-      if(y%2){
-        y |=0x80;
-      }
       output[2] = highByte(y);
       output[3] = lowByte(y);
+      //calculate and set parity
+      int num1s = 0;
+      for(int i = 0; i < 4; i++){
+        for(int j = 0; j < 8; j++){
+          if(output[i] & _BV(j)){
+            num1s++;
+          }
+        }
+      }
+      if(num1s%2){
+        output[0] |= _BV(6);
+      }
+
       //send 4 bytes of input data (central controller knows to expect 4 bytes because this is identified as a joystick)
     for(int i = 0; i < 4; i++){
       //spin until the last byte was shifted out
