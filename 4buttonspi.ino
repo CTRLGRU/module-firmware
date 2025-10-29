@@ -63,10 +63,15 @@ void loop(){
       output |= _BV(3);
     }
     //set parity bit
-    if(!output%2){
-      output |= 0x8;
+    int num1s = 0;
+    for(int i = 0; i < 8; i++){
+      if(output & _BV(i)){
+        num1s++;
+      }
     }
-
+    if(num1s % 2){
+      output |= _BV(7);
+    }
       //send the byte over
     dataSPI=output;
     }
