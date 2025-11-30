@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <SPI.h>
 
 /*
@@ -20,74 +19,97 @@ PB####XX XXXXXXXX ######YY YYYYYYYY
 identifies itself with the byte 'J' if prompted by the command for identification, 'X'
 */
 
-volatile bool received;
-volatile byte dataSPI;
-byte output[4];
+char volatile output[4];
+uint8_t volatile remaining;
 
 void setup() {
+  //set MISO to output because hardware doesn't do it automatically
   pinMode(MISO,OUTPUT);
   pinMode(MOSI,INPUT);
+  pinMode(SCK,INPUT);
+  pinMode(SS,INPUT);
+  //2 axes and pushbutton
   pinMode(19,INPUT);
   pinMode(20,INPUT);
   pinMode(21,INPUT);
+  //give power to SPI
+  PRR &= ~_BV(PRSPI);
+
   //enable SPI
-  SPCR |= _BV(SPE);
+  SPCR |= _BV(SPE) | _BV(SPIE);
+
   //set MSTR to 0 to set to slave mode
   SPCR &= ~_BV(MSTR);
-  received = false;
-  SPI.attachInterrupt();
+
+  //clear SPI data
+  SPDR = 0;
+
+  //enable interrupts
+  sei();
+
+  remaining = 0;
 }
 
-void loop() {
-  //spin until data is received
-  while(!received);
-    //X is a byte requesting for identification
-    if(dataSPI=='X'){
-      //ID for joystick ("normal" kind; two axes w/ click)
-      dataSPI='J';
-      received = false;
-    }
-    //if something was received and it wasn't a request for identification prepare all the input data for sending over
-    else if(dataSPI=='R'){
-      //read the x axis
-      int x = analogRead(19);
-      //write the otherwise unused MSB with a flag for whether or not the button in the joystick was pressed
-      if(digitalRead(21)){
-      x |= 0x40;
-      }
-      output[0] = highByte(x);
-      output[1] = lowByte(x);
-      //read the y axis
-      int y = analogRead(20);
-      output[2] = highByte(y);
-      output[3] = lowByte(y);
-      //calculate and set parity
-      int num1s = 0;
-      for(int i = 0; i < 4; i++){
-        for(int j = 0; j < 8; j++){
-          if(output[i] & _BV(j)){
-            num1s++;
-          }
-        }
-      }
-      if(num1s%2){
-        output[0] |= _BV(6);
-      }
+void loop(){
+    __asm__ volatile ("sleep");
+}
 
-      //send 4 bytes of input data (central controller knows to expect 4 bytes because this is identified as a joystick)
-    for(int i = 0; i < 4; i++){
-      //spin until the last byte was shifted out
-      while(!received);
-      //load the buffer with a byte to send over
-      dataSPI=output[i];
-      received = false;
+void identify(){
+  SPDR='J';
+}
+
+void prepareInput(){
+  int x = analogRead(19);
+    //write the otherwise unused MSB with a flag for whether or not the button in the joystick was pressed
+    if(digitalRead(21)){
+    x |= 0x40;
+    }
+    output[0] = highByte(x);
+    output[1] = lowByte(x);
+    //read the y axis
+    int y = analogRead(20);
+    output[2] = highByte(y);
+    output[3] = lowByte(y);
+  //set parity bit
+  parity();
+
+  remaining = 4;
+}
+
+void transmitUserInput(){
+  SPDR = output[4-remaining--];
+}
+
+void parity(){
+  //calculate and set parity
+  int num1s = 0;
+  for(int i = 0; i < 4; i++){
+    for(int j = 0; j < 8; j++){
+      if(output[i] & _BV(j)){
+        num1s++;
+      }
     }
   }
-  //go back to sleep now that it's done
-  __asm__ ("sleep");
+  if(num1s%2){
+    output[0] |= _BV(6);
+  }
 }
 
-ISR (SPI_STC_vect){
-  dataSPI = SPDR;
-  received = true; 
+ISR(SPI_STC_vect){
+    char incoming = SPDR; // read incoming byte
+    switch(incoming){
+    case 'X': //X is a byte commanding identification, if it comes transmit what kind of part this is
+    identify();
+    break;
+    case 'R': //if R, transmit the states of the 4 buttons
+    prepareInput();
+    break;
+    default:
+    if(remaining > 0){
+      transmitUserInput();
+    }else{
+      SPDR = 250; //for troubleshooting
+    }
+    
+  }
 }
