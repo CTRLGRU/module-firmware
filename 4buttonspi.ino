@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <SPI.h>
 
 /*
@@ -19,67 +18,85 @@ P###UDLR
 identifies itself with the byte 'B' if prompted by the command for identification, 'X'
 */
 
-#define received SPSR & _BV(SPIF)
-volatile byte dataSPI;
-byte output;
-
 void setup() {
+  //set MISO to output because hardware doesn't do it automatically
   pinMode(MISO,OUTPUT);
   pinMode(MOSI,INPUT);
+  pinMode(SCK,INPUT);
+  pinMode(SS,INPUT);
+
+  //4 buttons
   pinMode(19,INPUT);
   pinMode(20,INPUT);
   pinMode(21,INPUT);
   pinMode(22, INPUT);
+
+  //give power to SPI
+  PRR &= ~_BV(PRSPI);
+
   //enable SPI
-  SPCR |= _BV(SPE);
+  SPCR |= _BV(SPE) | _BV(SPIE);
+
   //set MSTR to 0 to set to slave mode
   SPCR &= ~_BV(MSTR);
-  SPI.attachInterrupt();
+
+  //clear SPI data
+  SPDR = 0;
+
+  //enable interrupts
+  sei();
 }
 
 void loop(){
-  //wait for command to finish coming
-  while(!received);
-    //X is a byte commanding identification, if it comes transmit what kind of part this is
-    if(dataSPI=='X'){
-      //ID for a 4 button module is 'B'
-      dataSPI='B';
-    }
-    //if R, the the command to transmit input data is sent, do that
-    else if(dataSPI=='R'){
-    //initialize 8 bits to 0
-    output = 0;
-    //for the low 4 bits, set to 1 if the corresponding button's been pressed, the high 4 can be ignored
-    if(digitalRead(19)){
-      output |= _BV(0);
-    }
-    if(digitalRead(20)){
-      output |= _BV(1);
-    }
-    if(digitalRead(21)){
-      output |= _BV(2);
-    }
-    if(digitalRead(22)){
-      output |= _BV(3);
-    }
-    //set parity bit
-    int num1s = 0;
-    for(int i = 0; i < 8; i++){
-      if(output & _BV(i)){
-        num1s++;
-      }
-    }
-    if(num1s % 2){
-      output |= _BV(7);
-    }
-      //send the byte over
-    dataSPI=output;
-    }
-    //go back to sleep when done
-    __asm__ ("sleep");
+    __asm__ volatile ("sleep");
 }
 
+void identify(){
+      SPDR='B';
+}
 
-ISR (SPI_STC_vect){
-  dataSPI = SPDR;
+void transmitUserInput(){
+//initialize 8 bits to 0
+  SPDR = 0;
+  //for the low 4 bits, set to 1 if the corresponding button's been pressed, the high 4 can be ignored
+  if(digitalRead(19)){
+    SPDR |= _BV(0);
+  }
+  if(digitalRead(20)){
+    SPDR |= _BV(1);
+  }
+  if(digitalRead(21)){
+    SPDR |= _BV(2);
+  }
+  if(digitalRead(22)){
+    SPDR |= _BV(3);
+  }
+  //set parity bit
+  parity(&SPDR);
+}
+
+void parity(char* outputbuffer){
+int num1s = 0;
+  for(int i = 0; i < 8; i++){
+    if(*outputbuffer & _BV(i)){
+      num1s++;
+    }
+  }
+  if(num1s % 2){
+    *outputbuffer |= _BV(7);
+  }
+}
+
+ISR(SPI_STC_vect){
+    char incoming = SPDR;         // read incoming byte
+    switch(incoming){
+    case 'X': //X is a byte commanding identification, if it comes transmit what kind of part this is
+    identify();
+    break;
+    case 'R': //if R, transmit the states of the 4 buttons
+    transmitUserInput();
+    break;
+    default:
+    SPDR = 250; //for troubleshooting
+    }
 }
