@@ -72,8 +72,8 @@ void prepareInput(){
     output[3] = lowByte(y);
   //set parity bit
   parity();
-
   remaining = 4;
+  SPDR=output[0];
 }
 
 void transmitUserInput(){
@@ -107,9 +107,8 @@ ISR(SPI_STC_vect){
     default:
     if(remaining > 0){
       transmitUserInput();
-    }else{
-      SPDR = 250; //for troubleshooting
+    } else{
+      SPDR=128;//troubleshooting
     }
-    
   }
 }
