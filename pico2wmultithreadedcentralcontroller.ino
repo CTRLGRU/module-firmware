@@ -35,7 +35,7 @@ char intermediateOutputBuffer[32]; //plenty of RAM to go around so have 8 bytes 
 //modules start at 0, 8, 16, 24
 mutex_t internalBufferInUse;
 
-static uint8_t lineToPin[] = {1,1,1,1}; //set these to whatever pins correspond to the SS pins of the top left, top right, bottom right, bottom left modules
+static uint8_t lineToPin[] = {0,28,26,20}; //set these to whatever pins correspond to the SS pins of the top left, top right, bottom right, bottom left modules
 
 //usb generic HID gamepad setup
 uint8_t const desc_hid_report[] = {TUD_HID_REPORT_DESC_GAMEPAD()};
@@ -45,6 +45,9 @@ hid_gamepad_report_t gp;
 
 void setup(){
 
+  for(int i = 0; i<4; i++){
+    pinMode(lineToPin[i],OUTPUT);
+  }
 
   SPI.begin();
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
@@ -179,6 +182,39 @@ void pollModule(uint8_t line, char* bufferPointer){
     bufferPointer[(line*8)+i] = SPI.transfer(0);
   }
   digitalWrite(lineToPin[line],HIGH);
+
+  //error checking time
+  int num1s = 0;
+  bool xcheck = false;
+  bool ycheck = false;
+  bool bcheck = false;
+  switch(partMap[line]){
+    case 'J':
+      for(int i = 0; i < 4; i++){
+        for(int j = 0; j < 8; j++){
+          if(bufferPointer[(8*line)+i] & bit(j)){
+            num1s++;
+          }
+        }
+      }
+      xcheck = (bufferPointer[(8*line)] & 0b00111100) == 0b00111100; //check if there are any 0s in the x section's padding
+      ycheck = !((bufferPointer[(8*line)] & 0b00111100) == !0b00000000); //check if there are any 1s in the y section's padding
+      if(!num1s%2 && !xcheck && !ycheck){
+        getID(line);
+      }
+    break;
+    case 'B':
+        for(int i = 0; i < 8; i++){
+          if(bufferPointer[(8*line)] & bit(i)){
+            num1s++;
+          }
+        }
+      bcheck = ((bufferPointer[8*line] & 0b01110000) == 0b01010000);
+      if(!num1s%2 && !bcheck){
+        getID(line);
+      }
+    break;
+  }
 }
 
 void setMapping(uint8_t mapping, char mapArray[2][4]){
