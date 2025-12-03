@@ -342,111 +342,219 @@ void transmitGenericUSB(char* buffer){
   TinyUSBDevice.task();
   #endif
 
+
   if (!TinyUSBDevice.mounted()) { //cancel if the controller isn't actually plugged in w/ USB
     return;
   }
 
-  int lx = ((buffer[0] & 0x3F) << 8);
-  lx |= buffer[1];
-  lx -= 512;
-  lx = lx * (127/512);
-  gp.x = lx;
+  if(currentMapping==0){
+    int lx = ((buffer[0] & 0x3F) << 8);
+      lx |= buffer[1];
+      lx -= 512;
+      lx = lx * (127/512);
+      gp.x = lx;
 
-  int ly = ((buffer[2]) << 8);
-  ly |= buffer[3];
-  ly -= 512;
-  ly = ly * (127/512) * -1;
-  gp.y = ly;
+      int ly = ((buffer[2]) << 8);
+      ly |= buffer[3];
+      ly -= 512;
+      ly = ly * (127/512) * -1;
+      gp.y = ly;
 
-  int rx = ((buffer[16] & 0x3F) << 8);
-  rx |= buffer[17];
-  rx -= 512;
-  rx = ly * (127/512);
-  gp.z = rx;
+      int rx = ((buffer[16] & 0x3F) << 8);
+      rx |= buffer[17];
+      rx -= 512;
+      rx = ly * (127/512);
+      gp.z = rx;
 
-  int ry = ((buffer[18]) << 8);
-  ly |= buffer[19];
-  ly -= 512;
-  ly = ly * (127/512);
-  gp.rz = ry;
+      int ry = ((buffer[18]) << 8);
+      ly |= buffer[19];
+      ly -= 512;
+      ly = ly * (127/512);
+      gp.rz = ry;
 
-  //triggers
-  gp.rx = 0;
-  gp.ry = 0;
+      //triggers
+      gp.rx = 0;
+      gp.ry = 0;
 
-  buffer[24] &= 0xF;
-  switch(buffer[24]){
-    case 0x8: //up
-      gp.hat = 1;
-    break;
+      buffer[24] &= 0xF;
+      switch(buffer[24]){
+        case 0x8: //up
+          gp.hat = 1;
+        break;
 
-    case 0x9: //up right
-      gp.hat = 2;
-    break;
+        case 0x9: //up right
+          gp.hat = 2;
+        break;
 
-    case 0x1: //right
-      gp.hat = 3;
-    break;
+        case 0x1: //right
+          gp.hat = 3;
+        break;
 
-    case 0x5: //down right
-      gp.hat = 4;
-    break;
+        case 0x5: //down right
+          gp.hat = 4;
+        break;
 
-    case 0x4: //down
-      gp.hat = 5;
-    break;
+        case 0x4: //down
+          gp.hat = 5;
+        break;
 
-    case 0x6: //down left
-      gp.hat = 6;
-    break;
+        case 0x6: //down left
+          gp.hat = 6;
+        break;
 
-    case 0x2: //left
-      gp.hat = 7;
-    break;
+        case 0x2: //left
+          gp.hat = 7;
+        break;
 
-    case 0xA: //left up
-      gp.hat = 8;
-    break;
+        case 0xA: //left up
+          gp.hat = 8;
+        break;
 
-    case 0x0: //center
-      gp.hat = 0;
-    break;
+        case 0x0: //center
+          gp.hat = 0;
+        break;
+      }
+      
+      gp.buttons = 0;
+      switch(buffer[8]){
+        case 0x8: //up
+          gp.buttons |= GAMEPAD_BUTTON_Y;
+        break;
+
+        case 0x9: //up right
+          gp.hat |= GAMEPAD_BUTTON_Y | GAMEPAD_BUTTON_B;
+        break;
+
+        case 0x1: //right
+          gp.hat |= GAMEPAD_BUTTON_B;
+        break;
+
+        case 0x5: //down right
+          gp.hat |= GAMEPAD_BUTTON_B | GAMEPAD_BUTTON_A;
+        break;
+
+        case 0x4: //down
+          gp.hat |= GAMEPAD_BUTTON_A;
+        break;
+
+        case 0x6: //down left
+          gp.hat |= GAMEPAD_BUTTON_A | GAMEPAD_BUTTON_X;
+        break;
+
+        case 0x2: //left
+          gp.hat |= GAMEPAD_BUTTON_X;
+        break;
+
+        case 0xA: //left up
+          gp.hat |= GAMEPAD_BUTTON_X | GAMEPAD_BUTTON_Y;
+        break;
+      }
+  }
+
+  if(currentMapping==1){
+    int lx = ((buffer[24] & 0x3F) << 8);
+      lx |= buffer[1];
+      lx -= 512;
+      lx = lx * (127/512);
+      gp.x = lx;
+
+      int ly = ((buffer[25]) << 8);
+      ly |= buffer[3];
+      ly -= 512;
+      ly = ly * (127/512) * -1;
+      gp.y = ly;
+
+      int rx = ((buffer[16] & 0x3F) << 8);
+      rx |= buffer[17];
+      rx -= 512;
+      rx = ly * (127/512);
+      gp.z = rx;
+
+      int ry = ((buffer[17]) << 8);
+      ly |= buffer[19];
+      ly -= 512;
+      ly = ly * (127/512);
+      gp.rz = ry;
+
+      //triggers
+      gp.rx = 0;
+      gp.ry = 0;
+
+      buffer[0] &= 0xF;
+      switch(buffer[24]){
+        case 0x8: //up
+          gp.hat = 1;
+        break;
+
+        case 0x9: //up right
+          gp.hat = 2;
+        break;
+
+        case 0x1: //right
+          gp.hat = 3;
+        break;
+
+        case 0x5: //down right
+          gp.hat = 4;
+        break;
+
+        case 0x4: //down
+          gp.hat = 5;
+        break;
+
+        case 0x6: //down left
+          gp.hat = 6;
+        break;
+
+        case 0x2: //left
+          gp.hat = 7;
+        break;
+
+        case 0xA: //left up
+          gp.hat = 8;
+        break;
+
+        case 0x0: //center
+          gp.hat = 0;
+        break;
+      }
+      
+      gp.buttons = 0;
+      switch(buffer[8]){
+        case 0x8: //up
+          gp.buttons |= GAMEPAD_BUTTON_Y;
+        break;
+
+        case 0x9: //up right
+          gp.hat |= GAMEPAD_BUTTON_Y | GAMEPAD_BUTTON_B;
+        break;
+
+        case 0x1: //right
+          gp.hat |= GAMEPAD_BUTTON_B;
+        break;
+
+        case 0x5: //down right
+          gp.hat |= GAMEPAD_BUTTON_B | GAMEPAD_BUTTON_A;
+        break;
+
+        case 0x4: //down
+          gp.hat |= GAMEPAD_BUTTON_A;
+        break;
+
+        case 0x6: //down left
+          gp.hat |= GAMEPAD_BUTTON_A | GAMEPAD_BUTTON_X;
+        break;
+
+        case 0x2: //left
+          gp.hat |= GAMEPAD_BUTTON_X;
+        break;
+
+        case 0xA: //left up
+          gp.hat |= GAMEPAD_BUTTON_X | GAMEPAD_BUTTON_Y;
+        break;
+      }
   }
   
-  gp.buttons = 0;
-  switch(buffer[8]){
-    case 0x8: //up
-      gp.buttons |= GAMEPAD_BUTTON_Y;
-    break;
-
-    case 0x9: //up right
-      gp.hat |= GAMEPAD_BUTTON_Y | GAMEPAD_BUTTON_B;
-    break;
-
-    case 0x1: //right
-      gp.hat |= GAMEPAD_BUTTON_B;
-    break;
-
-    case 0x5: //down right
-      gp.hat |= GAMEPAD_BUTTON_B | GAMEPAD_BUTTON_A;
-    break;
-
-    case 0x4: //down
-      gp.hat |= GAMEPAD_BUTTON_A;
-    break;
-
-    case 0x6: //down left
-      gp.hat |= GAMEPAD_BUTTON_A | GAMEPAD_BUTTON_X;
-    break;
-
-    case 0x2: //left
-      gp.hat |= GAMEPAD_BUTTON_X;
-    break;
-
-    case 0xA: //left up
-      gp.hat |= GAMEPAD_BUTTON_X | GAMEPAD_BUTTON_Y;
-    break;
-  }
 
   usb_hid.sendReport(0, &gp, sizeof(gp));
 }
