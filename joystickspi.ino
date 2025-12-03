@@ -11,10 +11,10 @@ output format:
 B=push button (1 bit)
 X=x axis reading (10 bits)
 Y=y axis reading (10 bits)
-P=parity bit (central controller expects even always)
+P=parity bit (central controller expects odd)
 #=unused
 
-PB####XX XXXXXXXX ######YY YYYYYYYY
+PB1111XX XXXXXXXX 000000YY YYYYYYYY
 
 identifies itself with the byte 'J' if prompted by the command for identification, 'X'
 */
@@ -65,6 +65,7 @@ void prepareInput(){
     x |= 0x40;
     }
     output[0] = highByte(x);
+    output[0] |= 0x70; //set the bits in the empty space in the first byte for error checking
     output[1] = lowByte(x);
     //read the y axis
     int y = analogRead(20);
@@ -90,7 +91,7 @@ void parity(){
       }
     }
   }
-  if(num1s%2){
+  if(!num1s%2){
     output[0] |= _BV(6);
   }
 }
