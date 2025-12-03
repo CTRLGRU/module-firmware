@@ -369,7 +369,6 @@ void transmitGenericUSB(char* buffer){
   gp.rx = 0;
   gp.ry = 0;
 
-  uint8_t dPadDir = 0;
   buffer[24] &= 0xF;
   switch(buffer[24]){
     case 0x8: //up
@@ -409,9 +408,40 @@ void transmitGenericUSB(char* buffer){
     break;
   }
   
+  gp.buttons = 0;
+  switch(buffer[8]){
+    case 0x8: //up
+      gp.buttons |= GAMEPAD_BUTTON_Y;
+    break;
 
-  //im keeping this note here after I actually find the documentation for this but it is harder to find the mapping
-  //that this thing wants than I expected
-  gp.buttons = 0; 
+    case 0x9: //up right
+      gp.hat |= GAMEPAD_BUTTON_Y | GAMEPAD_BUTTON_B;
+    break;
+
+    case 0x1: //right
+      gp.hat |= GAMEPAD_BUTTON_B;
+    break;
+
+    case 0x5: //down right
+      gp.hat |= GAMEPAD_BUTTON_B | GAMEPAD_BUTTON_A;
+    break;
+
+    case 0x4: //down
+      gp.hat |= GAMEPAD_BUTTON_A;
+    break;
+
+    case 0x6: //down left
+      gp.hat |= GAMEPAD_BUTTON_A | GAMEPAD_BUTTON_X;
+    break;
+
+    case 0x2: //left
+      gp.hat |= GAMEPAD_BUTTON_X;
+    break;
+
+    case 0xA: //left up
+      gp.hat |= GAMEPAD_BUTTON_X | GAMEPAD_BUTTON_Y;
+    break;
+  }
+
   usb_hid.sendReport(0, &gp, sizeof(gp));
 }
