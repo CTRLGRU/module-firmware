@@ -73,8 +73,8 @@ void prepareInput(){
     output[3] = lowByte(y);
   //set parity bit
   parity();
-  remaining = 4;
   SPDR=output[0];
+  remaining = 3;
 }
 
 void transmitUserInput(){
