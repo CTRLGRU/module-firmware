@@ -10,10 +10,10 @@ U=up button
 D=down button
 L=left button
 R=right button
-P=parity bit (central wants even parity)
+P=parity bit (central wants odd parity)
 #= unusued
 
-P###UDLR
+P101UDLR
 
 identifies itself with the byte 'B' if prompted by the command for identification, 'X'
 */
@@ -71,6 +71,7 @@ void transmitUserInput(){
   if(digitalRead(22)){
     SPDR |= _BV(3);
   }
+  SPDR |= 0x50; //set the unused bits to 101 for error checking
   //set parity bit
   parity(&SPDR);
 }
@@ -82,7 +83,7 @@ int num1s = 0;
       num1s++;
     }
   }
-  if(num1s % 2){
+  if(!num1s%2){
     *outputbuffer |= _BV(7);
   }
 }
