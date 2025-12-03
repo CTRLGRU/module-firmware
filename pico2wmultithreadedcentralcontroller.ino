@@ -86,6 +86,9 @@ flags:
 //core 1 (internal IO)
 void core1_internal_comms(){
   unsigned long timeSinceLast = 0;
+  for(uint8_t i = 0; i< 32; i++){
+    intermediateOutputBuffer[i]=0; //clean the buffer of trash on startup
+  }
   while(1){
     if(millis()-timeSinceLast >= 1){
       mutex_enter_blocking(&internalBufferInUse);
@@ -108,46 +111,48 @@ uint8_t numCustomMappings = 0;
 char outputMode = 'G'; //default to generic USB
  
 void loop(){
+  setMapping(0,mapping);
+  while(1){
+    if(flags & bit(0)){
+      if(numCustomMappings == 0){
+        numCustomMappings = countMappingsInROM();
+      }
+      uint8_t totalMappings = COMMERCIAL_LAYOUTS + numCustomMappings;
+      currentMapping++;
+      if(currentMapping>=totalMappings){
+        currentMapping=0;
+      }
+      if(outputMode=='G'){
+        setMapping(0,mapping); //if the mode is set to generic gamepad just default to xbox controller
+      }else{
+        setMapping(currentMapping,mapping);
+      }
+      
+      flags &= ~bit(0);
+    }
 
-  if(flags & bit(0)){
-    if(numCustomMappings == 0){
-      numCustomMappings = countMappingsInROM();
+
+    if(flags & bit(1)){ //data in the buffer, grab it and transmit
+      char finalOutputBuffer[32]; //modules start at 0, 8, 16, 24
+      mutex_enter_blocking(&internalBufferInUse);
+      for(uint8_t i = 0; i < 32; i++){
+          finalOutputBuffer[i] = intermediateOutputBuffer[i];
+      }
+      for(uint8_t i = 0; i < 4; i++){
+        mapping[0][i] = partMap[i];
+      }
+      flags &= ~bit(1);
+      for(uint8_t i = 0; i< 32; i++){
+        intermediateOutputBuffer[i]=0; //clear the buffer when done
+      }
+      mutex_exit(&internalBufferInUse);
+
+      translateBuffer(mapping, finalOutputBuffer);
+
+      transmitOutput(outputMode, finalOutputBuffer);
+      
     }
-    uint8_t totalMappings = COMMERCIAL_LAYOUTS + numCustomMappings;
-    currentMapping++;
-    if(currentMapping>=totalMappings){
-      currentMapping=0;
-    }
-    if(outputMode=='G'){
-      setMapping(0,mapping); //if the mode is set to generic gamepad just default to xbox controller
-    }else{
-      setMapping(currentMapping,mapping);
-    }
-    
-    flags &= ~bit(0);
   }
-
-
-  if(flags & bit(1)){ //data in the buffer, grab it and transmit
-    char finalOutputBuffer[32]; //modules start at 0, 8, 16, 24
-    mutex_enter_blocking(&internalBufferInUse);
-    for(uint8_t i = 0; i < 32; i++){
-        finalOutputBuffer[i] = intermediateOutputBuffer[i];
-    }
-    for(uint8_t i = 0; i < 4; i++){
-      mapping[0][i] = partMap[i];
-    }
-    flags &= ~bit(1);
-    mutex_exit(&internalBufferInUse);
-
-    translateBuffer(mapping, finalOutputBuffer);
-
-    transmitOutput(outputMode, finalOutputBuffer);
-    
-  }
-
-
-
 }
 
 char getID(uint8_t line){
