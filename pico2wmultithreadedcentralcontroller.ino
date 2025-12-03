@@ -26,7 +26,7 @@ now you too can have six processors working in parallel to emulate an xbox 360 c
 */
 #include <pico/multicore.h>
 #include <SPI.h>
-
+#include <Adafruit_TinyUSB.h>
 
 //throwing these in global memory because it seems a lot more convenient to just have these in global w/ mutexes 
 char partMap[4];
@@ -37,41 +37,111 @@ mutex_t internalBufferInUse;
 
 static uint8_t lineToPin[] = {1,1,1,1}; //set these to whatever pins correspond to the SS pins of the top left, top right, bottom right, bottom left modules
 
+//usb generic HID gamepad setup
+uint8_t const desc_hid_report[] = {TUD_HID_REPORT_DESC_GAMEPAD()};
+Adafruit_USBD_HID usb_hid;
+hid_gamepad_report_t gp;
+
 
 void setup(){
 
 
   SPI.begin();
-  SPI.beginTransaction(SPISettings(125000, MSBFIRST, SPI_MODE0));
+  SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
   
+  usb_hid.setPollInterval(2);
+  usb_hid.setReportDescriptor(desc_hid_report, sizeof(desc_hid_report));
+  usb_hid.begin();
+  if (TinyUSBDevice.mounted()) {
+    TinyUSBDevice.detach();
+    delay(10);
+    TinyUSBDevice.attach();
+  }
+
 
   mutex_init(&internalBufferInUse);
   for(int i = 0; i<4;i++){
     partMap[i]='X';
   }
-  delay(100);
+  delay(10);
   multicore_launch_core1(core1_internal_comms);
 }
 
-//core 1 (internal IO)
+char flags = 0;
+/*
+flags:
+0|change output map
+1|buffer ready for transfer
+2|change mode
+3|
+4|
+5|
+6|
+7|
+*/
 
+//core 1 (internal IO)
 void core1_internal_comms(){
+  unsigned long timeSinceLast = 0;
   while(1){
-    mutex_enter_blocking(&internalBufferInUse);
-    for(uint8_t i = 0; i < 4; i++){
-      pollModule(i,intermediateOutputBuffer);
+    if(millis()-timeSinceLast >= 1){
+      mutex_enter_blocking(&internalBufferInUse);
+      for(uint8_t i = 0; i < 4; i++){
+        pollModule(i,intermediateOutputBuffer);
+      }
+      flags |= bit(1);
+      mutex_exit(&internalBufferInUse);
+      timeSinceLast = millis();
     }
-    mutex_exit(&internalBufferInUse);
   }
 }
 
 //core 0 (external IO)
 char mapping[2][4]; //[input/output], [lines 1/2/3/4]
 
+#define COMMERCIAL_LAYOUTS 2
+uint8_t currentMapping=0;
+uint8_t numCustomMappings = 0;
+char outputMode = 'G'; //default to generic USB
+ 
 void loop(){
-  char finalOutputBuffer[32]; //plenty of RAM to go around so have 8 bytes for every module
-  //at moment of writing I'm not sure what kind of module would need 8 bytes of space but futureproofing doesn't hurt
-  //modules start at 0, 8, 16, 24
+
+  if(flags & bit(0)){
+    if(numCustomMappings == 0){
+      numCustomMappings = countMappingsInROM();
+    }
+    uint8_t totalMappings = COMMERCIAL_LAYOUTS + numCustomMappings;
+    currentMapping++;
+    if(currentMapping>=totalMappings){
+      currentMapping=0;
+    }
+    if(outputMode=='G'){
+      setMapping(0,mapping); //if the mode is set to generic gamepad just default to xbox controller
+    }else{
+      setMapping(currentMapping,mapping);
+    }
+    
+    flags &= ~bit(0);
+  }
+
+
+  if(flags & bit(1)){ //data in the buffer, grab it and transmit
+    char finalOutputBuffer[32]; //modules start at 0, 8, 16, 24
+    mutex_enter_blocking(&internalBufferInUse);
+    for(uint8_t i = 0; i < 32; i++){
+        finalOutputBuffer[i] = intermediateOutputBuffer[i];
+    }
+    for(uint8_t i = 0; i < 4; i++){
+      mapping[0][i] = partMap[i];
+    }
+    flags &= ~bit(1);
+    mutex_exit(&internalBufferInUse);
+
+    translateBuffer(mapping, finalOutputBuffer);
+
+    transmitOutput(outputMode, finalOutputBuffer);
+    
+  }
 
 
 
@@ -92,7 +162,7 @@ void pollModule(uint8_t line, char* bufferPointer){
   uint8_t numBytes=0;
   switch(partMap[line]){
     case 'X':
-    partMap[line] = getID(line); //if the line is marked as empty then check if that's still the case
+    partMap[line] = getID(line); //if the line is marked as empty then check if that's still the case then get back to it next cycle
     return;
     break;
     case 'J':
@@ -104,10 +174,18 @@ void pollModule(uint8_t line, char* bufferPointer){
   }
   digitalWrite(lineToPin[line],LOW);
   SPI.transfer('R');
+  delayMicroseconds(2); //give the slave some time to prepare its data buffer, this delay isn't perceptible or anything but it gives the slave 30 clock cycles or so before the SPI starts clocking again
   for(uint8_t i = 0; i < numBytes; i++){
     bufferPointer[(line*8)+i] = SPI.transfer(0);
   }
   digitalWrite(lineToPin[line],HIGH);
+}
+
+void setMapping(uint8_t mapping, char mapArray[2][4]){
+  if(mapping < COMMERCIAL_LAYOUTS){
+    setPremadeMapping(mapping,mapArray);
+  }
+  setCustomMapping(mapping,mapArray);
 }
 
 void setPremadeMapping(uint8_t commercialController,char mapArray[2][4]){
@@ -126,6 +204,13 @@ void setPremadeMapping(uint8_t commercialController,char mapArray[2][4]){
     mapArray[1][3] = 'B';
     break;
     //can't think of any kind of default behavior this would have
+  }
+}
+
+void setCustomMapping(uint8_t customController,char mapArray[2][4]){
+  char* customMapInROM = getConfigFromROM(customController);
+  for(uint8_t i = 0; i < 4; i++){
+    mapArray[0][i] = *(customMapInROM+i);
   }
 }
 
@@ -189,4 +274,108 @@ void translateJoystickToButton(char* outputBuffer, uint8_t line){
   }else if(xval > 768){
     outputBuffer[(8*line)] |= bit(0);
   }
+}
+
+char* getConfigFromROM(uint8_t mappingToFind){
+  return NULL;
+}
+
+void saveConfigToROM(){
+  
+}
+
+uint8_t countMappingsInROM(){
+  return 0;
+}
+
+void transmitOutput(char mode,char* buffer){
+  switch(outputMode){
+    case('G'): //at time of writing there are no other output modes so if there's some other mode input here something is wrong
+      transmitGenericUSB(buffer);
+      break;
+  }
+}
+
+void transmitGenericUSB(char* buffer){
+  #ifdef TINYUSB_NEED_POLLING_TASK
+  TinyUSBDevice.task();
+  #endif
+
+  if (!TinyUSBDevice.mounted()) { //cancel if the controller isn't actually plugged in w/ USB
+    return;
+  }
+
+  int lx = ((buffer[0] & 0x3F) << 8);
+  lx |= buffer[1];
+  lx -= 512;
+  lx = lx * (127/512);
+  gp.x = lx;
+
+  int ly = ((buffer[2]) << 8);
+  ly |= buffer[3];
+  ly -= 512;
+  ly = ly * (127/512) * -1;
+  gp.y = ly;
+
+  int rx = ((buffer[16] & 0x3F) << 8);
+  rx |= buffer[17];
+  rx -= 512;
+  rx = ly * (127/512);
+  gp.z = rx;
+
+  int ry = ((buffer[18]) << 8);
+  ly |= buffer[19];
+  ly -= 512;
+  ly = ly * (127/512);
+  gp.rz = ry;
+
+  //triggers
+  gp.rx = 0;
+  gp.ry = 0;
+
+  uint8_t dPadDir = 0;
+  buffer[24] &= 0xF;
+  switch(buffer[24]){
+    case 0x8: //up
+      gp.hat = 1;
+    break;
+
+    case 0x9: //up right
+      gp.hat = 2;
+    break;
+
+    case 0x1: //right
+      gp.hat = 3;
+    break;
+
+    case 0x5: //down right
+      gp.hat = 4;
+    break;
+
+    case 0x4: //down
+      gp.hat = 5;
+    break;
+
+    case 0x6: //down left
+      gp.hat = 6;
+    break;
+
+    case 0x2: //left
+      gp.hat = 7;
+    break;
+
+    case 0xA: //left up
+      gp.hat = 8;
+    break;
+
+    case 0x0: //center
+      gp.hat = 0;
+    break;
+  }
+  
+
+  //im keeping this note here after I actually find the documentation for this but it is harder to find the mapping
+  //that this thing wants than I expected
+  gp.buttons = 0; 
+  usb_hid.sendReport(0, &gp, sizeof(gp));
 }
