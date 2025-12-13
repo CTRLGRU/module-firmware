@@ -30,18 +30,19 @@ now you too can have six processors working in parallel to emulate an xbox 360 c
 
 //throwing these in global memory because it seems a lot more convenient to just have these in global w/ mutexes 
 char partMap[4];
-char intermediateOutputBuffer[32]; //plenty of RAM to go around so have 8 bytes for every module
+uint8_t intermediateOutputBuffer[32]; //plenty of RAM to go around so have 8 bytes for every module
 //at moment of writing I'm not sure what kind of module would need 8 bytes of space but futureproofing doesn't hurt
 //modules start at 0, 8, 16, 24
 mutex_t internalBufferInUse;
 
-static uint8_t lineToPin[] = {0,28,26,20}; //set these to whatever pins correspond to the SS pins of the top left, top right, bottom right, bottom left modules
+static uint8_t lineToPin[] = {0,28,20,15}; //set these to whatever pins correspond to the SS pins of the top left, top right, bottom right, bottom left modules
 
 //usb generic HID gamepad setup
 uint8_t const desc_hid_report[] = {TUD_HID_REPORT_DESC_GAMEPAD()};
 Adafruit_USBD_HID usb_hid;
 hid_gamepad_report_t gp;
 
+char mapping[2][4]; //[input/output], [lines 1/2/3/4]
 
 void setup(){
 
@@ -49,10 +50,15 @@ void setup(){
     pinMode(lineToPin[i],OUTPUT);
   }
 
+  for(int i = 0; i<4; i++){
+    digitalWrite(lineToPin[i],HIGH);
+  }
+
+
   SPI.begin();
   SPI.beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
   
-  usb_hid.setPollInterval(2);
+  usb_hid.setPollInterval(4);
   usb_hid.setReportDescriptor(desc_hid_report, sizeof(desc_hid_report));
   usb_hid.begin();
   if (TinyUSBDevice.mounted()) {
@@ -60,6 +66,11 @@ void setup(){
     delay(10);
     TinyUSBDevice.attach();
   }
+
+  mapping[1][0] = 'J'; //setting a default mapping
+  mapping[1][1] = 'B';
+  mapping[1][2] = 'J';
+  mapping[1][3] = 'B';
 
 
   mutex_init(&internalBufferInUse);
@@ -70,7 +81,7 @@ void setup(){
   multicore_launch_core1(core1_internal_comms);
 }
 
-char flags = 0;
+uint8_t volatile flags = 0;
 /*
 flags:
 0|change output map
@@ -89,9 +100,14 @@ void core1_internal_comms(){
   while(1){
     if(millis()-timeSinceLast >= 1){
       mutex_enter_blocking(&internalBufferInUse);
+      for(uint8_t i = 0; i < 32; i++){
+        intermediateOutputBuffer[i] = 0;
+      }
+
       for(uint8_t i = 0; i < 4; i++){
         pollModule(i,intermediateOutputBuffer);
       }
+
       flags |= bit(1);
       mutex_exit(&internalBufferInUse);
       timeSinceLast = millis();
@@ -100,7 +116,6 @@ void core1_internal_comms(){
 }
 
 //core 0 (external IO)
-char mapping[2][4]; //[input/output], [lines 1/2/3/4]
 
 #define COMMERCIAL_LAYOUTS 2
 uint8_t currentMapping=0;
@@ -129,7 +144,7 @@ void loop(){
 
 
   if(flags & bit(1)){ //data in the buffer, grab it and transmit
-    char finalOutputBuffer[32]; //modules start at 0, 8, 16, 24
+    uint8_t finalOutputBuffer[32]; //modules start at 0, 8, 16, 24
     mutex_enter_blocking(&internalBufferInUse);
     for(uint8_t i = 0; i < 32; i++){
         finalOutputBuffer[i] = intermediateOutputBuffer[i];
@@ -142,26 +157,28 @@ void loop(){
 
     translateBuffer(mapping, finalOutputBuffer);
 
-    transmitOutput(outputMode, finalOutputBuffer);
+    transmitOutput(outputMode, finalOutputBuffer,currentMapping);
     
   }
 
-
+  #ifdef TINYUSB_NEED_POLLING_TASK
+  TinyUSBDevice.task();
+  #endif
 
 }
 
 char getID(uint8_t line){
-  digitalWrite(lineToPin[line],HIGH);
+  digitalWrite(lineToPin[line],LOW);
   SPI.transfer('X'); //send the command to ID, discard whatever junk was in the slave's buffer before
   char returnedID = SPI.transfer(0); //retrieve the module's ID and send whatever back down the line
-  digitalWrite(lineToPin[line],LOW);
+  digitalWrite(lineToPin[line],HIGH);
   if(returnedID != 'J' && returnedID != 'B'){ //make this more dynamic in the future but for now there are only two possible modules
     returnedID = 'X';
   }
   return returnedID;
 }
 
-void pollModule(uint8_t line, char* bufferPointer){
+void pollModule(uint8_t line, uint8_t* bufferPointer){
   uint8_t numBytes=0;
   switch(partMap[line]){
     case 'X':
@@ -197,10 +214,13 @@ void pollModule(uint8_t line, char* bufferPointer){
           }
         }
       }
-      xcheck = (bufferPointer[(8*line)] & 0b00111100) == 0b00111100; //check if there are any 0s in the x section's padding
-      ycheck = !((bufferPointer[(8*line)] & 0b00111100) == !0b00000000); //check if there are any 1s in the y section's padding
-      if(!num1s%2 && !xcheck && !ycheck){
+      xcheck = (bufferPointer[(8*line)] & 0x3C) == 0x3C; //check if there are any 0s in the x section's padding
+      ycheck = !((bufferPointer[(8*line)+2] & 0xFC)); //check if there are any 1s in the y section's padding
+      if(!(num1s%2) || !xcheck || !ycheck){
         getID(line);
+        for(uint8_t i = 0; i < 4; i++){//if the data's corrupted just wipe the module's state and data, try again next cycle
+          bufferPointer[(8*line)+i]=0;
+        }
       }
     break;
     case 'B':
@@ -209,15 +229,18 @@ void pollModule(uint8_t line, char* bufferPointer){
             num1s++;
           }
         }
-      bcheck = ((bufferPointer[8*line] & 0b01110000) == 0b01010000);
-      if(!num1s%2 && !bcheck){
+      bcheck = ((bufferPointer[8*line] & 0x70) == 0x70);
+      if(!(num1s%2) || !bcheck){
         getID(line);
+        for(uint8_t i = 0; i < 4; i++){ 
+          bufferPointer[(8*line)+i]=0;
+        }
       }
     break;
   }
 }
 
-void setMapping(uint8_t mapping, char mapArray[2][4]){
+void setMapping(char mapping, char mapArray[2][4]){
   if(mapping < COMMERCIAL_LAYOUTS){
     setPremadeMapping(mapping,mapArray);
   }
@@ -250,16 +273,16 @@ void setCustomMapping(uint8_t customController,char mapArray[2][4]){
   }
 }
 
-void translateBuffer(char IOmap[2][4], char* outputBuffer){
+void translateBuffer(char IOmap[2][4], uint8_t* outputBuffer){
   for(uint8_t i = 0; i < 4; i++){
     if(IOmap[0][i] == 'X' || IOmap[0][i] == IOmap[1][i]){ //if the actual plugged in device is missing/invalid, or if it matches the desired device, it doesn't need to be translated
-      break;
+      continue;
     }
   translateModule(IOmap[0][i], IOmap[1][i], outputBuffer, i);
   }
 }
 
-void translateModule(char physMod, char mapMod, char* outputBuffer, uint8_t line){
+void translateModule(char physMod, char mapMod, uint8_t* outputBuffer, uint8_t line){
   switch(physMod){
     case('B'):
     switch(mapMod){
@@ -278,7 +301,7 @@ void translateModule(char physMod, char mapMod, char* outputBuffer, uint8_t line
   }
 }
 
-void translateButtonToJoystick(char* outputBuffer, uint8_t line){
+void translateButtonToJoystick(uint8_t* outputBuffer, uint8_t line){
   bool up = outputBuffer[line] & bit(3);
   bool down = outputBuffer[line] & bit(2);
   bool left = outputBuffer[line] & bit(1);
@@ -292,7 +315,7 @@ void translateButtonToJoystick(char* outputBuffer, uint8_t line){
   outputBuffer[(8*line)+3] = lowByte(yAxis);
 }
 
-void translateJoystickToButton(char* outputBuffer, uint8_t line){
+void translateJoystickToButton(uint8_t* outputBuffer, uint8_t line){
   uint xval = ((outputBuffer[(8*line)] & 0x3F) << 8);
   xval |= outputBuffer[(8*line)+1];
   uint yval = ((outputBuffer[(8*line+2)]) << 8);
@@ -324,15 +347,15 @@ uint8_t countMappingsInROM(){
   return 0;
 }
 
-void transmitOutput(char mode,char* buffer){
+void transmitOutput(char mode,uint8_t* buffer,bool format){
   switch(outputMode){
     case('G'): //at time of writing there are no other output modes so if there's some other mode input here something is wrong
-      transmitGenericUSB(buffer);
+      transmitGenericUSB(buffer, format);
       break;
   }
 }
 
-void transmitGenericUSB(char* buffer){
+void transmitGenericUSB(uint8_t* buffer, bool format){
   #ifdef TINYUSB_NEED_POLLING_TASK
   TinyUSBDevice.task();
   #endif
@@ -341,106 +364,210 @@ void transmitGenericUSB(char* buffer){
     return;
   }
 
-  int lx = ((buffer[0] & 0x3F) << 8);
-  lx |= buffer[1];
-  lx -= 512;
-  lx = lx * (127/512);
-  gp.x = lx;
+  if(format==0){ //xbox layout, top left = joystick, top right = buttons, bottom left = dpad, bottom right = other joystick
+    int lx = ((buffer[0] & 0x3F) << 8);
+      lx |= buffer[1];
+      lx -= 512;
+      lx = (lx * 127)/512;
+      gp.x = lx;
 
-  int ly = ((buffer[2]) << 8);
-  ly |= buffer[3];
-  ly -= 512;
-  ly = ly * (127/512) * -1;
-  gp.y = ly;
+      int ly = ((buffer[2]) << 8);
+      ly |= buffer[3];
+      ly -= 512;
+      ly = (ly * 127)/512 * -1;
+      gp.y = ly;
 
-  int rx = ((buffer[16] & 0x3F) << 8);
-  rx |= buffer[17];
-  rx -= 512;
-  rx = ly * (127/512);
-  gp.z = rx;
+      int rx = ((buffer[16] & 0x3F) << 8);
+      rx |= buffer[17];
+      rx -= 512;
+      rx = (rx * 127)/512;
+      gp.z = rx;
 
-  int ry = ((buffer[18]) << 8);
-  ly |= buffer[19];
-  ly -= 512;
-  ly = ly * (127/512);
-  gp.rz = ry;
+      int ry = ((buffer[18]) << 8);
+      ry |= buffer[19];
+      ry -= 512;
+      ry = (ry * 127)/512;
+      gp.rz = ry;
 
-  //triggers
-  gp.rx = 0;
-  gp.ry = 0;
+      //triggers //implement later (when I have actual trigger components)
+      gp.rx = 0;
+      gp.ry = 0;
 
-  buffer[24] &= 0xF;
-  switch(buffer[24]){
-    case 0x8: //up
-      gp.hat = 1;
-    break;
+      uint8_t dpad = buffer[24] & 0x0F;
 
-    case 0x9: //up right
-      gp.hat = 2;
-    break;
+      bool up    = dpad & 0x08;
+      bool down  = dpad & 0x04;
+      bool left  = dpad & 0x02;
+      bool right = dpad & 0x01;
 
-    case 0x1: //right
-      gp.hat = 3;
-    break;
+      if ((up && down) || (left && right)) {
+          gp.hat = 0; // center
+      }
+      else if (up && right) {
+          gp.hat = 2;
+      }
+      else if (down && right) {
+          gp.hat = 4;
+      }
+      else if (down && left) {
+          gp.hat = 6;
+      }
+      else if (up && left) {
+          gp.hat = 8;
+      }
+      else if (up) {
+          gp.hat = 1;
+      }
+      else if (right) {
+          gp.hat = 3;
+      }
+      else if (down) {
+          gp.hat = 5;
+      }
+      else if (left) {
+          gp.hat = 7;
+      }
+      else {
+          gp.hat = 0;
+      }
+      
+      gp.buttons = 0;
+      switch(buffer[8]){
+        case 0x8: //up
+          gp.buttons |= GAMEPAD_BUTTON_Y;
+        break;
 
-    case 0x5: //down right
-      gp.hat = 4;
-    break;
+        case 0x9: //up right
+          gp.buttons |= GAMEPAD_BUTTON_Y | GAMEPAD_BUTTON_B;
+        break;
 
-    case 0x4: //down
-      gp.hat = 5;
-    break;
+        case 0x1: //right
+          gp.buttons |= GAMEPAD_BUTTON_B;
+        break;
 
-    case 0x6: //down left
-      gp.hat = 6;
-    break;
+        case 0x5: //down right
+          gp.buttons |= GAMEPAD_BUTTON_B | GAMEPAD_BUTTON_A;
+        break;
 
-    case 0x2: //left
-      gp.hat = 7;
-    break;
+        case 0x4: //down
+          gp.buttons |= GAMEPAD_BUTTON_A;
+        break;
 
-    case 0xA: //left up
-      gp.hat = 8;
-    break;
+        case 0x6: //down left
+          gp.buttons |= GAMEPAD_BUTTON_A | GAMEPAD_BUTTON_X;
+        break;
 
-    case 0x0: //center
-      gp.hat = 0;
-    break;
+        case 0x2: //left
+          gp.buttons |= GAMEPAD_BUTTON_X;
+        break;
+
+        case 0xA: //left up
+          gp.buttons |= GAMEPAD_BUTTON_X | GAMEPAD_BUTTON_Y;
+        break;
+      }
   }
-  
-  gp.buttons = 0;
-  switch(buffer[8]){
-    case 0x8: //up
-      gp.buttons |= GAMEPAD_BUTTON_Y;
-    break;
 
-    case 0x9: //up right
-      gp.hat |= GAMEPAD_BUTTON_Y | GAMEPAD_BUTTON_B;
-    break;
+  if(format==1){ //playstation layout, clockwise dpad, bottons, joystick and other joystick
+    int lx = ((buffer[24] & 0x3F) << 8);
+      lx |= buffer[25];
+      lx -= 512;
+      lx = (lx * 127)/512;
+      gp.x = lx;
 
-    case 0x1: //right
-      gp.hat |= GAMEPAD_BUTTON_B;
-    break;
+      int ly = ((buffer[26]) << 8);
+      ly |= buffer[27];
+      ly -= 512;
+      ly = (ly * 127)/512 * -1;
+      gp.y = ly;
 
-    case 0x5: //down right
-      gp.hat |= GAMEPAD_BUTTON_B | GAMEPAD_BUTTON_A;
-    break;
+      int rx = ((buffer[16] & 0x3F) << 8);
+      rx |= buffer[17];
+      rx -= 512;
+      rx = (rx * 127)/512;
+      gp.z = rx;
 
-    case 0x4: //down
-      gp.hat |= GAMEPAD_BUTTON_A;
-    break;
+      int ry = ((buffer[17]) << 8);
+      ry |= buffer[19];
+      ry -= 512;
+      ry = (ry * 127)/512;
+      gp.rz = ry;
 
-    case 0x6: //down left
-      gp.hat |= GAMEPAD_BUTTON_A | GAMEPAD_BUTTON_X;
-    break;
+      //triggers
+      gp.rx = 0;
+      gp.ry = 0;
 
-    case 0x2: //left
-      gp.hat |= GAMEPAD_BUTTON_X;
-    break;
+      uint8_t dpad = buffer[0] & 0xF;
 
-    case 0xA: //left up
-      gp.hat |= GAMEPAD_BUTTON_X | GAMEPAD_BUTTON_Y;
-    break;
+      bool up    = dpad & 0x8;
+      bool down  = dpad & 0x4;
+      bool left  = dpad & 0x2;
+      bool right = dpad & 0x1;
+
+      if ((up && down) || (left && right)) {
+          gp.hat = 0; // center
+      }
+      else if (up && right) {
+          gp.hat = 2;
+      }
+      else if (down && right) {
+          gp.hat = 4;
+      }
+      else if (down && left) {
+          gp.hat = 6;
+      }
+      else if (up && left) {
+          gp.hat = 8;
+      }
+      else if (up) {
+          gp.hat = 1;
+      }
+      else if (right) {
+          gp.hat = 3;
+      }
+      else if (down) {
+          gp.hat = 5;
+      }
+      else if (left) {
+          gp.hat = 7;
+      }
+      else {
+          gp.hat = 0;
+      }
+      
+      gp.buttons = 0;
+      switch(buffer[8]){
+        case 0x8: //up
+          gp.buttons |= GAMEPAD_BUTTON_Y;
+        break;
+
+        case 0x9: //up right
+          gp.buttons |= GAMEPAD_BUTTON_Y | GAMEPAD_BUTTON_B;
+        break;
+
+        case 0x1: //right
+          gp.buttons |= GAMEPAD_BUTTON_B;
+        break;
+
+        case 0x5: //down right
+          gp.buttons |= GAMEPAD_BUTTON_B | GAMEPAD_BUTTON_A;
+        break;
+
+        case 0x4: //down
+          gp.buttons |= GAMEPAD_BUTTON_A;
+        break;
+
+        case 0x6: //down left
+          gp.buttons |= GAMEPAD_BUTTON_A | GAMEPAD_BUTTON_X;
+        break;
+
+        case 0x2: //left
+          gp.buttons |= GAMEPAD_BUTTON_X;
+        break;
+
+        case 0xA: //left up
+          gp.buttons |= GAMEPAD_BUTTON_X | GAMEPAD_BUTTON_Y;
+        break;
+      }
   }
 
   usb_hid.sendReport(0, &gp, sizeof(gp));
