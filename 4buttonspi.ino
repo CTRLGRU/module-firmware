@@ -21,14 +21,16 @@ identifies itself with the byte 'B' if prompted by the command for identificatio
 volatile uint8_t data = 0;
 
 void setup() {
-  pinMode(MISO, OUTPUT);
-  pinMode(MOSI, INPUT);
-  pinMode(SCK, INPUT);
-  pinMode(SS, INPUT);
-  pinMode(19, INPUT_PULLUP); //PC0-PC3
-  pinMode(20, INPUT_PULLUP);
-  pinMode(21, INPUT_PULLUP);
-  pinMode(22, INPUT_PULLUP);
+  pinMode(MISO,OUTPUT); //output line to master
+  pinMode(MOSI,INPUT); //input line from master (I LOVE FULL DUPLEX!!)
+  pinMode(SCK,INPUT); //clock, advances the register whenever the master pulses it
+  pinMode(SS,INPUT); //select line (active low)
+  //PC0-PC3
+  pinMode(19, INPUT_PULLUP); //up
+  pinMode(20, INPUT_PULLUP); //down
+  pinMode(21, INPUT_PULLUP); //left
+  pinMode(22, INPUT_PULLUP); //right
+  //just rewire however you want I usually have it wired in the DDR order anyways
   
   PRR &= ~_BV(PRSPI); //Power to SPI
   SPCR |= _BV(SPE) | _BV(SPIE); //Enable SPI logic
@@ -54,29 +56,36 @@ void loop() {
   }
   
   temp |= 0x70; // Set bits 6-4 to 111
-  parity(&temp);
-  data = temp;
-  SPDR = data;
-  __asm__ volatile ("sleep");
+  parity(&temp); //run the parity calculation function
+  data = temp; //put the finished stuff in the data buffer where SPI will grab it from
+  __asm__ volatile ("sleep"); //go back to sleep when everything's done
 }
 
-void parity(uint8_t* outputbuffer) {
+void parity(uint8_t* outputbuffer) { //calculates and sets parity
   int num1s = 0;
-  for(int i = 0; i < 8; i++) {
-    if(*outputbuffer & _BV(i)) num1s++;
+  for(int i = 0; i < 8; i++) {//iterate through the 8 bits
+    if(*outputbuffer & _BV(i)){//and add to the 1s count for every set bit
+      num1s++;
   }
-  if(!(num1s & 1)) *outputbuffer |= _BV(7);
+  if(!(num1s & 1)){ //if there's an even amount of bits (LSB of num1s is 0), set parity bit so it's odd
+    *outputbuffer |= _BV(7);
+}
+
+void identify(){
+  SPDR='B';
 }
 
 ISR(SPI_STC_vect) {
   uint8_t incoming = SPDR;
 
   switch(incoming) {
-    case 'X': //identify() (not in a separate function call for speed)
-      SPDR = 'B'; // Next read will get 'B'
+    case 'X': //identifies what the function is
+      identify(); // Next read will get 'B'
       break;
       
-    case 'R': //pollModule() (ditto)
+    case 'R': //used to be a separate function call where the user input would be
+    //prepared on demand but that's too slow for the speeds the SPI works at so instead
+    //that function just runs on loop now but pretend this is basically transmitUserInput();
       SPDR = data; // Next read will get button data
       break;
       
