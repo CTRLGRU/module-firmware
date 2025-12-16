@@ -26,11 +26,11 @@ uint8_t volatile byteToSend;
 bool volatile axis; //false = x true = y
 
 void setup() {
-  //set MISO to output because hardware doesn't do it automatically
-  pinMode(MISO,OUTPUT);
-  pinMode(MOSI,INPUT);
-  pinMode(SCK,INPUT);
-  pinMode(SS,INPUT);
+  //setup the SPI pins
+  pinMode(MISO,OUTPUT); //output line to master
+  pinMode(MOSI,INPUT); //input line from master (I LOVE FULL DUPLEX!!)
+  pinMode(SCK,INPUT); //clock, advances the register whenever the master pulses it
+  pinMode(SS,INPUT); //select line (active low)
   //2 axes and pushbutton
   pinMode(19,INPUT); //ADC0
   pinMode(20,INPUT); //ADC1
@@ -90,25 +90,25 @@ void setup() {
 }
 
 void loop(){
-  for(int i = 4; i < 4; i++){ //take finished readings from initial buffer
+  for(int i = 4; i < 4; i++){ //take finished readings from initial buffer and bring them into the working area
     intermediateData[i] = initialData[i];
   }
 
   //work on the intermediate buffer which isn't touched by either interrupt
-  if(PINC & _BV(2)){
+  if(PINC & _BV(2)){ //indicate if the built in button on the joystick's been pressed
     intermediateData[0] |= _BV(6);
   }
 
-  intermediateData[0] |= 0x3c;
+  intermediateData[0] |= 0x3c; //fill the first byte's unused bits with 1 for error checking
 
-  parity(intermediateData);
+  parity(intermediateData); //run the parity calculation function on the intermediate buffer
 
 
   for(int i = 4; i < 4; i++){ //put finished data in the output buffer for SPI to look at
     finalData[i] = intermediateData[i];
   }
 
-    __asm__ volatile ("sleep");
+    __asm__ volatile ("sleep"); //go back to sleep when everything's done
 }
 
 void identify(){
@@ -117,15 +117,17 @@ void identify(){
 
 void parity(uint8_t* outputBuffer){ //calculates and sets parity
   int num1s = 0;
-  for(int i = 0; i < 4; i++) {
-    for(int j = 0; i < 8; j++){
-      if(outputBuffer[i] & _BV(j)) num1s++;
+  for(int i = 0; i < 4; i++) { //for all 4 bits in the buffer
+    for(int j = 0; i < 8; j++){ //iterate through their 8 bits each
+      if(outputBuffer[i] & _BV(j)){ //and add to the 1s count for every bit
+        num1s++;
     }
   }
-  if(!(num1s & 1)) outputBuffer[0] |= _BV(7);
+  if(!(num1s & 1)){
+    outputBuffer[0] |= _BV(7);
 }
 
-ISR(ADC_VECT){
+ISR(ADC_VECT, ISR_NOBLOCK){ //Interrupt for whenever the ADC finishes, non blocking because the SPI's interrupt is a LOT more time sensitive
   if(axis){
     initialData[3] = ADCL; //put Y reading into buffer
     initialData[2] = ADCH;
@@ -152,9 +154,9 @@ ISR(SPI_STC_vect){
     SPDR = finalData[byteToSend=0];
     break;
     default:
-    if(byteToSend>3){
+    if(byteToSend>3){ //if all the data in the buffer's been sent start sending error bytes
       SPDR = 0x0F;
-    } else{
+    } else{ //if there's still data to send send the next byte
       SPDR = finalData[++byteToSend];
     }
   }
