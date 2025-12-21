@@ -27,10 +27,7 @@ bool volatile axis; //false = x true = y
 
 void setup() {
   //setup the SPI pins
-  pinMode(MISO,OUTPUT); //output line to master
-  pinMode(MOSI,INPUT); //input line from master (I LOVE FULL DUPLEX!!)
-  pinMode(SCK,INPUT); //clock, advances the register whenever the master pulses it
-  pinMode(SS,INPUT); //select line (active low)
+
   //2 axes and pushbutton
   pinMode(19,INPUT); //ADC0
   pinMode(20,INPUT); //ADC1
@@ -111,9 +108,6 @@ void loop(){
     __asm__ volatile ("sleep"); //go back to sleep when everything's done
 }
 
-void identify(){
-  SPDR='J';
-}
 
 void parity(uint8_t* outputBuffer){ //calculates and sets parity
   int num1s = 0;
@@ -123,7 +117,7 @@ void parity(uint8_t* outputBuffer){ //calculates and sets parity
         num1s++;
     }
   }
-  if(!(num1s & 1)){
+  if(!(num1s & 1)){ //if there's an even amount of bits (LSB of num1s is 0), set parity bit so it's odd
     outputBuffer[0] |= _BV(7);
 }
 
@@ -144,14 +138,22 @@ ISR(ADC_VECT, ISR_NOBLOCK){ //Interrupt for whenever the ADC finishes, non block
   }
 }
 
+void identify(){
+  SPDR='J';
+}
+
+void inputRead(){
+  SPDR = finalData[byteToSend=0];
+}
+
 ISR(SPI_STC_vect){
     char incoming = SPDR; // read incoming byte
     switch(incoming){
     case 'X': //X is a byte commanding identification, if it comes transmit what kind of part this is
     identify(); 
     break;
-    case 'R': //if R, transmit the first byte of the output buffer
-    SPDR = finalData[byteToSend=0];
+    case 'R':
+    inputRead(); //this really just resets the counter but I want inputRead() here doing something for consistency
     break;
     default:
     if(byteToSend>3){ //if all the data in the buffer's been sent start sending error bytes
