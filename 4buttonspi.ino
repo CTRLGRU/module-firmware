@@ -75,6 +75,10 @@ void identify(){
   SPDR='B';
 }
 
+void inputRead(){
+  SPDR = data;
+}
+
 ISR(SPI_STC_vect) {
   uint8_t incoming = SPDR;
 
@@ -86,7 +90,7 @@ ISR(SPI_STC_vect) {
     case 'R': //used to be a separate function call where the user input would be
     //prepared on demand but that's too slow for the speeds the SPI works at so instead
     //that function just runs on loop now but pretend this is basically transmitUserInput();
-      SPDR = data; // Next read will get button data
+      inputRead(); // Next read will get button data
       break;
       
     default:
