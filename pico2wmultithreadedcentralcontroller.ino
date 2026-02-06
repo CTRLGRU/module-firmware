@@ -27,6 +27,7 @@ now you too can have six processors working in parallel to emulate an xbox 360 c
 #include <pico/multicore.h>
 #include <SPI.h>
 #include <Adafruit_TinyUSB.h>
+#include <EEPROM.h>
 
 //throwing these in global memory because it seems a lot more convenient to just have these in global w/ mutexes 
 char partMap[4];
@@ -43,6 +44,44 @@ Adafruit_USBD_HID usb_hid;
 hid_gamepad_report_t gp;
 
 char mapping[2][4]; //[input/output], [lines 1/2/3/4]
+
+typedef struct CustomMapping {
+   //map of the 4 intended modules for the output mapping
+  char components[4];
+
+  /*
+  triggers for the 8 macros, an 8bit number representing each module should cover every possible input
+  the MSB of a given byte represents if the input should be exact or not for the trigger [0=not exact 1=exact]
+  and there are up to 4 "stages" in a trigger so it takes a chain of specific inputs to trigger a macro
+  for example, for a quarter circle [236] input trigger using the bottom left module should go,
+  1. triggers[x][2] == 0b10000100, set MSB so up+down, or left+down, or right+down aren't valid trigger stages
+  2. triggers[x][6] == 0b10000101
+  3. triggers[x][10] == 0b1000001
+  4. triggers[x][14] == 0b0000000, or "I don't care what happens on this module in this stage"
+  and for all other triggers[x][y], set them to 0x00 for don't cares
+  */
+  uint8_t triggers[8][16]; 
+
+  /*
+  every block of 4 bytes is the intended outputs for each module in a step of the macro,
+  and there are 10 steps to a macro. MSB of a byte is whether or not it's exact, or if it
+  SETS that module to it exactly, or it's just additive. 
+  For example, the byte 0b00000000 means make no changes to the module's input for this step,
+  while the byte 0b10000000 means WIPE the input from this module for the step.
+  Or, 0b00000001 means add a "right" input on that module, in addition to whatever else is actually
+  being input on it, while 0b10000001 means cancel real input and just go right.
+
+  For example, a macro that executes a 236 input attack, assuming a joystick in the bottom left
+  and buttons in the top right. 
+
+  1. playbacks[x][2] == 0b10000100,
+  2. playbacks[x][6] == 0b10000101
+  3. playbacks[x][10] == 0b1000001
+  3. playbacks[x][8] == 0b0000010, additive instead of forcing just a left button press in case your jump button is on the same module or wtv
+
+  */
+  uint8_t playbacks[8][40]; //each macro can have 10 steps, each represented by 4 bytes that represent a 
+} CustomMapping;
 
 void setup(){
 
@@ -71,6 +110,8 @@ void setup(){
   mapping[1][1] = 'B';
   mapping[1][2] = 'J';
   mapping[1][3] = 'B';
+
+  EEPROM.begin(2056);
 
 
   mutex_init(&internalBufferInUse);
@@ -118,17 +159,16 @@ void core1_internal_comms(){
 //core 0 (external IO)
 
 #define COMMERCIAL_LAYOUTS 2
+#define CUSTOM_LAYOUTS 3
+//this was originally going to be dynamic but with how much space a macro will take up
+//and how many macros there will be in a mapping this will just be capped at 3
 uint8_t currentMapping=0;
-uint8_t numCustomMappings = 0;
 char outputMode = 'G'; //default to generic USB
+uint8_t totalMappings = COMMERCIAL_LAYOUTS + CUSTOM_LAYOUTS;
  
 void loop(){
 
   if(flags & bit(0)){
-    if(numCustomMappings == 0){
-      numCustomMappings = countMappingsInROM();
-    }
-    uint8_t totalMappings = COMMERCIAL_LAYOUTS + numCustomMappings;
     currentMapping++;
     if(currentMapping>=totalMappings){
       currentMapping=0;
@@ -160,10 +200,6 @@ void loop(){
     transmitOutput(outputMode, finalOutputBuffer,currentMapping);
     
   }
-
-  #ifdef TINYUSB_NEED_POLLING_TASK
-  TinyUSBDevice.task();
-  #endif
 
 }
 
@@ -339,12 +375,38 @@ char* getConfigFromROM(uint8_t mappingToFind){
   return NULL;
 }
 
-void saveConfigToROM(){
-  
+void wipeEEROM(){
+  for(int i = 0; i < EEPROM.length(); i++){
+    EEPROM.write(i,0);
+  }
+
+  CustomMapping empty;
+  for(int i = 0; i < 4; i++){
+    empty.components[i] = 'X';
+  }
+
+  for(int i = 0; i < 8; i++){
+    for(int j = 0; j < 16; i++){
+      empty.triggers[i][j] = 0xFF;
+    }
+  }
+
+  for(int i = 0; i < 8; i++){
+    for(int j = 0; j < 40; i++){
+      empty.playbacks[i][j] = 0x00;
+    }
+  }
+
+  for(int i = 0; i < 3; i++){
+    EEPROM.put(sizeof(CustomMapping)*i,empty);
+  }
+  EEPROM.commit();
 }
 
-uint8_t countMappingsInROM(){
-  return 0;
+
+void saveConfigToROM(){
+
+  EEPROM.commit();
 }
 
 void transmitOutput(char mode,uint8_t* buffer,bool format){
