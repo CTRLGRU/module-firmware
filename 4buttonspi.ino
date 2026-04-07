@@ -36,6 +36,10 @@ void setup() {
   SPCR |= _BV(SPE) | _BV(SPIE); //Enable SPI logic
   SPCR &= ~_BV(MSTR); //Mode to slave
   SPDR = 0x0F; //I don't like doing all 0s because it looks the same as a dead line and I learned the hard way to not use any vals that could be ASCII 
+
+  //set up sleep
+  SMCR |= _BV(SE);
+  SMCR &= ~0x06;
   sei(); //Enable global interrupts
 }
 
@@ -66,9 +70,11 @@ void parity(uint8_t* outputbuffer) { //calculates and sets parity
   for(int i = 0; i < 8; i++) {//iterate through the 8 bits
     if(*outputbuffer & _BV(i)){//and add to the 1s count for every set bit
       num1s++;
+    }
   }
   if(!(num1s & 1)){ //if there's an even amount of bits (LSB of num1s is 0), set parity bit so it's odd
     *outputbuffer |= _BV(7);
+  }
 }
 
 void identify(){

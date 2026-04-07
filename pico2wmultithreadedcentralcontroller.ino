@@ -29,14 +29,28 @@ now you too can have six processors working in parallel to emulate an xbox 360 c
 #include <Adafruit_TinyUSB.h>
 #include <EEPROM.h>
 
+//important constants
+#define NUMMODS 6
+#define SWAPPABLEMODS 4
+#define STATICMODS 2
+#define BYTESPERMOD 3
+#define NUMMACROS 8
+#define MACROTRIGGERSTAGES 4
+#define MACROPLAYBACKSTAGES 10
+#define COMMERCIAL_LAYOUTS 2
+#define CUSTOM_LAYOUTS 3 //this was originally going to be dynamic but with how much space a macro will take up and how many macros there will be in a mapping this will just be capped at 3
+
+
 //throwing these in global memory because it seems a lot more convenient to just have these in global w/ mutexes
 char partMap[4];
-uint8_t intermediateOutputBuffer[6][8];  //plenty of RAM to go around so have 8 bytes for every module
-//at moment of writing I'm not sure what kind of module would need 8 bytes of space but futureproofing doesn't hurt
-//swappable modules start at 0, 8, 16, 24, 32-47 are used for integral parts (face buttons, joysticks, bumbers etc)
+
+uint8_t intermediateOutputBuffer[NUMMODS][BYTESPERMOD];  //6 modules, 3 bytes each
+//swappable modules are 0-3, 4-5 are used for integral parts (face buttons, joysticks, bumpers etc)
 mutex_t internalBufferInUse;
 
-static uint8_t lineToPin[] = { 0, 28, 20, 15 };  //set these to whatever pins correspond to the SS pins of the top left, top right, bottom right, bottom left modules
+static uint8_t lineToPin[] = { 0, 1, 2, 3 };  //set these to whatever pins correspond to the SS pins of the top left, top right, bottom right, bottom left modules
+static uint8_t integralButtonPins[] = { 4, 5, 6, 7, 8 }; //lbumper rbumper select start central
+//later note: the pi pico's pinout has me just putting all GPIO on the left side I guess but also these can be replaced however
 static char supportedIDs[] = { 'B', 'J' }; //throw all supported device IDs in here as they come
 
 //usb generic HID gamepad setup
@@ -44,11 +58,13 @@ uint8_t const desc_hid_report[] = { TUD_HID_REPORT_DESC_GAMEPAD() };
 Adafruit_USBD_HID usb_hid;
 hid_gamepad_report_t gp;
 
-char mapping[2][4];  //[input/output], [lines 1/2/3/4]
+char mapping[2][SWAPPABLEMODS];  //[input/output], [lines 1/2/3/4]
+
+
 
 typedef struct CustomMapping {
   //map of the 4 intended modules for the output mapping
-  char components[4];
+  char components[SWAPPABLEMODS];
 
   /*
   triggers for the 8 macros, an 8bit number representing each module should cover every possible input
@@ -62,7 +78,7 @@ typedef struct CustomMapping {
   4. triggers[x][3][2] == 0b0000000, or "I don't care what happens on this module in this stage"
   and for all other triggers[x][y], set them to 0x00 for don't cares
   */
-  uint8_t triggers[8][4][6];
+  uint8_t triggers[NUMMACROS][MACROTRIGGERSTAGES][NUMMODS];
 
   /*
   every block of 4 bytes is the intended outputs for each module in a step of the macro,
@@ -82,16 +98,16 @@ typedef struct CustomMapping {
   3. playbacks[x][3][2] == 0b0000010, additive instead of forcing just a left button press in case your jump button is on the same module or wtv
 
   */
-  uint8_t playbacks[8][10][6];  //each macro can have 10 steps, each represented by 6 bytes for the 6 modules in it
+  uint8_t playbacks[NUMMACROS][MACROPLAYBACKSTAGES][NUMMODS];  //each macro can have 10 steps, each represented by 6 bytes for the 6 modules in it
 } CustomMapping;
 
 void setup() {
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < SWAPPABLEMODS; i++) {
     pinMode(lineToPin[i], OUTPUT);
   }
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < SWAPPABLEMODS; i++) {
     digitalWrite(lineToPin[i], HIGH);
   }
 
@@ -115,9 +131,10 @@ void setup() {
 
   EEPROM.begin(2056);
 
+  analogReadResolution(8);
 
   mutex_init(&internalBufferInUse);
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < SWAPPABLEMODS; i++) {
     partMap[i] = 'X';
   }
   delay(10);
@@ -143,13 +160,13 @@ void core1_internal_comms() {
   while (1) {
     if (millis() - timeSinceLast >= 1) {
       mutex_enter_blocking(&internalBufferInUse);
-      for (uint8_t i = 0; i < 6; i++) {
-        for (uint8_t j = 0; j < 8; j++) {
+      for (uint8_t i = 0; i < NUMMODS; i++) {
+        for (uint8_t j = 0; j < BYTESPERMOD; j++) {
           intermediateOutputBuffer[i][j] = 0;
         }
       }
 
-      for (uint8_t i = 0; i < 4; i++) {
+      for (uint8_t i = 0; i < SWAPPABLEMODS; i++) {
         pollModule(i, intermediateOutputBuffer);
       }
 
@@ -164,10 +181,7 @@ void core1_internal_comms() {
 
 //core 0 (external IO)
 
-#define COMMERCIAL_LAYOUTS 2
-#define CUSTOM_LAYOUTS 3
-//this was originally going to be dynamic but with how much space a macro will take up
-//and how many macros there will be in a mapping this will just be capped at 3
+
 uint8_t currentMapping = 0;
 char outputMode = 'G';  //default to generic USB
 uint8_t totalMappings = COMMERCIAL_LAYOUTS + CUSTOM_LAYOUTS;
@@ -198,14 +212,14 @@ void loop() {
 
 
   if (flags & bit(1)) {               //data in the buffer, grab it and transmit
-    uint8_t finalOutputBuffer[6][8];  //modules are 0-3, 4&5 are integral parts
+    uint8_t finalOutputBuffer[NUMMODS][BYTESPERMOD];  //modules are 0-3, 4&5 are integral parts
     mutex_enter_blocking(&internalBufferInUse);
-    for (uint8_t i = 0; i < 6; i++) {
-      for (uint8_t j = 0; j < 8; j++) {
+    for (uint8_t i = 0; i < NUMMODS; i++) {
+      for (uint8_t j = 0; j < BYTESPERMOD; j++) {
         finalOutputBuffer[i][j] = intermediateOutputBuffer[i][j];
       }
     }
-    for (uint8_t i = 0; i < 4; i++) {
+    for (uint8_t i = 0; i < SWAPPABLEMODS; i++) {
       mapping[0][i] = partMap[i];
     }
     flags &= ~bit(1);
@@ -220,6 +234,7 @@ void loop() {
 char getID(uint8_t line) {
   digitalWrite(lineToPin[line], LOW);
   SPI.transfer('X');                  //send the command to ID, discard whatever junk was in the slave's buffer before
+  delayMicroseconds(2);
   char returnedID = SPI.transfer(0);  //retrieve the module's ID and send whatever back down the line
   digitalWrite(lineToPin[line], HIGH);
   if (!verifyModuleID(returnedID)) {
@@ -229,7 +244,7 @@ char getID(uint8_t line) {
 }
 
 bool verifyModuleID(char testedID){
-  for(uint8_t i; i < sizeof(supportedIDs); i++){
+  for(uint8_t i = 0; i < sizeof(supportedIDs); i++){
     if(testedID==supportedIDs[i]){
       return true;
     }
@@ -237,7 +252,7 @@ bool verifyModuleID(char testedID){
   return false;
 }
 
-void pollModule(uint8_t line, uint8_t bufferPointer[][8]) {
+void pollModule(uint8_t line, uint8_t bufferPointer[][BYTESPERMOD]) {
   uint8_t numBytes = 0;
   switch (partMap[line]) {
     case 'X':
@@ -245,7 +260,7 @@ void pollModule(uint8_t line, uint8_t bufferPointer[][8]) {
       return;
       break;
     case 'J':
-      numBytes = 4;
+      numBytes = 2;
       break;
     case 'B':
       numBytes = 1;
@@ -261,23 +276,19 @@ void pollModule(uint8_t line, uint8_t bufferPointer[][8]) {
 
   //error checking time
   int num1s = 0;
-  bool xcheck = false;
-  bool ycheck = false;
   bool bcheck = false;
   switch (partMap[line]) {
     case 'J':
-      for (int i = 0; i < 4; i++) {
+      for (int i = 0; i < numBytes; i++) {
         for (int j = 0; j < 8; j++) {
           if (bufferPointer[line][i] & bit(j)) {
             num1s++;
           }
         }
       }
-      xcheck = (bufferPointer[line][0] & 0x3C) == 0x3C;  //check if there are any 0s in the x section's padding
-      ycheck = !((bufferPointer[line][2] & 0xFC));       //check if there are any 1s in the y section's padding
-      if (!(num1s % 2) || !xcheck || !ycheck) {
-        getID(line);
-        for (uint8_t i = 0; i < 4; i++) {  //if the data's corrupted just wipe the module's state and data, try again next cycle
+      if (!(num1s % 2)) {
+        partMap[line] = getID(line);
+        for (uint8_t i = 0; i < BYTESPERMOD; i++) {  //if the data's corrupted just wipe the module's state and data, try again next cycle
           bufferPointer[line][i] = 0;
         }
       }
@@ -290,8 +301,8 @@ void pollModule(uint8_t line, uint8_t bufferPointer[][8]) {
       }
       bcheck = ((bufferPointer[line][0] & 0x70) == 0x70);
       if (!(num1s % 2) || !bcheck) {
-        getID(line);
-        for (uint8_t i = 0; i < 4; i++) {
+        partMap[line] = getID(line);
+        for (uint8_t i = 0; i < BYTESPERMOD; i++) {
           bufferPointer[line][i] = 0;
         }
       }
@@ -299,14 +310,14 @@ void pollModule(uint8_t line, uint8_t bufferPointer[][8]) {
   }
 }
 
-void setMapping(char mapping, char mapArray[2][4]) {
+void setMapping(char mapping, char mapArray[2][SWAPPABLEMODS]) {
   if (mapping < COMMERCIAL_LAYOUTS) {
     setPremadeMapping(mapping, mapArray);
   }
   setCustomMapping(mapping, mapArray);
 }
 
-void setPremadeMapping(uint8_t commercialController, char mapArray[2][4]) {
+void setPremadeMapping(uint8_t commercialController, char mapArray[2][SWAPPABLEMODS]) {
   //set to 0 for Xbox layout, set to 1 for a dualshock layout, will add other premade controller layouts later
   switch (commercialController) {
     case (0):
@@ -325,15 +336,15 @@ void setPremadeMapping(uint8_t commercialController, char mapArray[2][4]) {
   }
 }
 
-void setCustomMapping(uint8_t customController, char mapArray[2][4]) {
+void setCustomMapping(uint8_t customController, char mapArray[2][SWAPPABLEMODS]) {
   char *customMapInROM = getConfigFromROM(customController);
   for (uint8_t i = 0; i < 4; i++) {
     mapArray[0][i] = *(customMapInROM + i);
   }
 }
 
-void translateBuffer(char IOmap[2][4], uint8_t outputBuffer[][8]) {
-  for (uint8_t i = 0; i < 4; i++) {
+void translateBuffer(char IOmap[2][SWAPPABLEMODS], uint8_t outputBuffer[][BYTESPERMOD]) {
+  for (uint8_t i = 0; i < SWAPPABLEMODS; i++) {
     if (IOmap[0][i] == 'X' || IOmap[0][i] == IOmap[1][i]) {  //if the actual plugged in device is missing/invalid, or if it matches the desired device, it doesn't need to be translated
       continue;
     }
@@ -341,7 +352,7 @@ void translateBuffer(char IOmap[2][4], uint8_t outputBuffer[][8]) {
   }
 }
 
-void translateModule(char physMod, char mapMod, uint8_t outputBuffer[][8], uint8_t line) {
+void translateModule(char physMod, char mapMod, uint8_t outputBuffer[][BYTESPERMOD], uint8_t line) {
   switch (physMod) {
     case ('B'):
       switch (mapMod) {
@@ -360,36 +371,38 @@ void translateModule(char physMod, char mapMod, uint8_t outputBuffer[][8], uint8
   }
 }
 
-void translateButtonToJoystick(uint8_t outputBuffer[][8], uint8_t line) {
+void translateButtonToJoystick(uint8_t outputBuffer[][BYTESPERMOD], uint8_t line) {
   bool up = outputBuffer[line][0] & bit(3);
   bool down = outputBuffer[line][0] & bit(2);
   bool left = outputBuffer[line][0] & bit(1);
   bool right = outputBuffer[line][0] & bit(0);
 
-  uint xAxis = 512 + right * 512 - left * 512;
-  uint yAxis = 512 + up * 512 - down * 512;
-  outputBuffer[line][0] = highByte(xAxis);
-  outputBuffer[line][1] = lowByte(xAxis);
-  outputBuffer[line][2] = highByte(yAxis);
-  outputBuffer[line][3] = lowByte(yAxis);
+  if(up&&down&&left&&right){
+    outputBuffer[line][0] = 1;
+    outputBuffer[line][1]= 0;
+    //if all buttons are pushed center the joystick and click the button
+    return;
+  }
+
+  int8_t xAxis = 0 + right * 127 - left * 127;
+  int8_t yAxis = 0 + up * 127 - down * 127;
+  outputBuffer[line][0] = xAxis &= ~0x1;
+  outputBuffer[line][1] = yAxis &= ~0x1;
+
 }
 
-void translateJoystickToButton(uint8_t outputBuffer[][8], uint8_t line) {
-  uint xval = ((outputBuffer[line][0] & 0x3F) << 8);
-  xval |= outputBuffer[line][1];
-  uint yval = (outputBuffer[line][2] << 8);
-  yval |= outputBuffer[line][3];
+void translateJoystickToButton(uint8_t outputBuffer[][BYTESPERMOD], uint8_t line) {
+  int8_t xval = (outputBuffer[line][0] &= ~0x1);
+  int8_t yval = (outputBuffer[line][1] &= ~0x1);
 
-  outputBuffer[line][0] = 0;
-
-  if (xval > 768) {
+  if (xval > 64) {
     outputBuffer[line][0] |= bit(3);
-  } else if (xval < 256) {
+  } else if (xval < -64) {
     outputBuffer[line][0] |= bit(2);
   }
-  if (yval < 256) {
+  if (yval < -64) {
     outputBuffer[line][0] |= bit(1);
-  } else if (xval > 768) {
+  } else if (yval > 64) {
     outputBuffer[line][0] |= bit(0);
   }
 }
@@ -404,27 +417,27 @@ void wipeEEPROM() {
   }
 
   CustomMapping empty;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < SWAPPABLEMODS; i++) {
     empty.components[i] = 'X';
   }
 
-  for (int i = 0; i < 8; i++) {
-    for (int j = 0; j < 4; i++) {
-      for (int k = 0; k < 6; k++) {
+  for (int i = 0; i < NUMMACROS; i++) {
+    for (int j = 0; j < MACROTRIGGERSTAGES; j++) {
+      for (int k = 0; k < NUMMODS; k++) {
         empty.triggers[i][j][k] = 0xFF;
       }
     }
   }
 
-  for (int i = 0; i < 8; i++) {
-    for (int j = 0; j < 10; i++) {
-      for (int k = 0; k < 6; k++) {
+  for (int i = 0; i < NUMMACROS; i++) {
+    for (int j = 0; j < MACROPLAYBACKSTAGES; j++) {
+      for (int k = 0; k < NUMMODS; k++) {
         empty.playbacks[i][j][k] = 0x00;
       }
     }
   }
 
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < CUSTOM_LAYOUTS; i++) {
     EEPROM.put(sizeof(CustomMapping) * i, empty);
   }
   EEPROM.commit();
@@ -432,70 +445,83 @@ void wipeEEPROM() {
 
 
 bool saveConfigToROM() {
-  CustomMapping tempStructs[3];
-  for(uint8_t configNum = 0; configNum < 3; configNum++){
-    uint8_t *configPtr = (uint8_t *) &tempStructs[configNum];
-    for(int byteInConfig = 0; byteInConfig < sizeof(CustomMapping); byteInConfig++){
-      configPtr[byteInConfig] = SerialTinyUSB.read();
+  SerialTinyUSB.write("SAVING CONFIGS\n");
+  CustomMapping tempStructs[CUSTOM_LAYOUTS];
+  const int totalBytes = sizeof(tempStructs);
+  int received = 0;
+  uint8_t *structsPtr = (uint8_t *)tempStructs;
+
+  int startTime = millis();
+  while(received<totalBytes){
+    
+    if(SerialTinyUSB.available()){
+      structsPtr[received++]=(uint8_t) SerialTinyUSB.read();
+      startTime=millis();
+
+      if(received%256==0){
+        tud_task();
+        SerialTinyUSB.write("#");
+      }
     }
-    int addr = configNum * sizeof(CustomMapping);
+    
+
+    if((millis() - startTime) > 2000){
+      SerialTinyUSB.write("TIMEOUT, TRANSFER CANCELED\n");
+      return 1;
+    }
+  }
+  for(uint8_t configNum = 0; configNum < CUSTOM_LAYOUTS; configNum++){
+    SerialTinyUSB.write('\n');
+    SerialTinyUSB.write("SAVING CONFIG ");
+    SerialTinyUSB.println(configNum);
+    int addr = sizeof(CustomMapping)*configNum;
     EEPROM.put(addr, tempStructs[configNum]);
   }
 
   EEPROM.commit();
+
+  SerialTinyUSB.write("\nDONE");
   return 0;
 }
 
-void transmitOutput(char mode, uint8_t buffer[][8], bool format) {
+void transmitOutput(char mode, uint8_t buffer[][BYTESPERMOD], bool format) {
   switch (outputMode) {
     case ('G'):  //at time of writing there are no other output modes so if there's some other mode input here something is wrong
       transmitGenericUSB(buffer, format);
       break;
     case ('R'):
       transmitRawUSBCDC(buffer);
-      break;
+      break;  
   }
 }
 
-void transmitRawUSBCDC(uint8_t buffer[][8]) {
+void transmitRawUSBCDC(uint8_t buffer[][BYTESPERMOD]) {
   uint8_t *flattened = &buffer[0][0];
-  SerialTinyUSB.write(flattened, 48);
+  SerialTinyUSB.write(flattened, NUMMODS*BYTESPERMOD);
 }
 
-void transmitGenericUSB(uint8_t buffer[][8], bool format) {
+void transmitGenericUSB(uint8_t buffer[][BYTESPERMOD], bool format) {
 
   if (!TinyUSBDevice.mounted()) {  //cancel if the controller isn't actually plugged in w/ USB
     return;
   }
 
   if (format == 0) {  //xbox layout, top left = joystick, top right = buttons, bottom left = dpad, bottom right = other joystick
-    int lx = ((buffer[0][0] & 0x3F) << 8);
-    lx |= buffer[0][1];
-    lx -= 512;
-    lx = (lx * 127) / 512;
-    gp.x = lx;
+    int8_t lx = buffer[0][0];
+    gp.x = lx &= ~0x1;
 
-    int ly = ((buffer[0][2]) << 8);
-    ly |= buffer[0][3];
-    ly -= 512;
-    ly = (ly * 127) / 512 * -1;
-    gp.y = ly;
+    int ly = buffer[0][1];
+    gp.y = ly &= ~0x1;
 
-    int rx = ((buffer[1][0] & 0x3F) << 8);
-    rx |= buffer[1][1];
-    rx -= 512;
-    rx = (rx * 127) / 512;
-    gp.z = rx;
+    int rx = buffer[1][0];
+    gp.z = rx &= ~0x1;
 
-    int ry = ((buffer[1][2]) << 8);
-    ry |= buffer[1][3];
-    ry -= 512;
-    ry = (ry * 127) / 512;
-    gp.rz = ry;
+    int ry = buffer[1][1];
+    gp.rz = ry &= ~0x1;
 
     //triggers //implement later (when I have actual trigger components)
-    gp.rx = 0;
-    gp.ry = 0;
+    gp.rx = buffer[4][1];
+    gp.ry = buffer[4][2];
 
     uint8_t dpad = buffer[3][0] & 0x0F;
 
@@ -563,33 +589,21 @@ void transmitGenericUSB(uint8_t buffer[][8], bool format) {
   }
 
   if (format == 1) {  //playstation layout, clockwise dpad, bottons, joystick and other joystick
-    int lx = ((buffer[3][0] & 0x3F) << 8);
-    lx |= buffer[3][1];
-    lx -= 512;
-    lx = (lx * 127) / 512;
-    gp.x = lx;
+    int lx = buffer[3][0];
+    gp.x = lx  &= ~0x1;
 
-    int ly = ((buffer[3][2]) << 8);
-    ly |= buffer[3][3];
-    ly -= 512;
-    ly = (ly * 127) / 512 * -1;
-    gp.y = ly;
+    int ly = buffer[3][1];
+    gp.y = ly &= ~0x1;
 
-    int rx = ((buffer[2][0] & 0x3F) << 8);
-    rx |= buffer[2][1];
-    rx -= 512;
-    rx = (rx * 127) / 512;
-    gp.z = rx;
+    int rx = buffer[2][0];
+    gp.z = rx  &= ~0x1;
 
-    int ry = ((buffer[2][2]) << 8);
-    ry |= buffer[2][3];
-    ry -= 512;
-    ry = (ry * 127) / 512;
-    gp.rz = ry;
+    int ry = buffer[2][2];
+    gp.rz = ry &= ~0x1;
 
     //triggers
-    gp.rx = 0;
-    gp.ry = 0;
+    gp.rx = buffer[4][1];
+    gp.ry = buffer[4][2];
 
     uint8_t dpad = buffer[0][0] & 0xF;
 
@@ -659,18 +673,34 @@ void transmitGenericUSB(uint8_t buffer[][8], bool format) {
   usb_hid.sendReport(0, &gp, sizeof(gp));
 }
 
-void pollIntegralParts(uint8_t buffer[][8]) {
+void pollIntegralParts(uint8_t buffer[][BYTESPERMOD]) {
+  for(uint8_t i = 0; i < sizeof(integralButtonPins); i++){ //poll the integral buttons
+    if(digitalRead(integralButtonPins[i])){
+      buffer[4][0] |= bit(i);
+    }
+  }
+
+  buffer[4][1] = analogRead(A0); //left trigger
+  buffer[4][2] = analogRead(A1); //right trigger
+
+
 }
 
 void serialCommandReceived() {
   char buffer[64];
-  uint8_t i;
-  while (SerialTinyUSB.available()) {
+  uint8_t i=0;
+  while (SerialTinyUSB.available() && i < sizeof(buffer) - 1) {
     buffer[i++] = SerialTinyUSB.read();
   }
 
+  buffer[i]='\0';
+
   if (!strcmp(buffer, "TEST")) {
     testRoutines();
+  }
+
+  if (!strcmp(buffer, "PING")) {
+    SerialTinyUSB.println("PONG");
   }
 
   if (!strcmp(buffer, "WIPE")) {
@@ -688,6 +718,15 @@ void serialCommandReceived() {
   if (!strcmp(buffer, "MODULES")) {
     reportInstalledModules();
   }
+
+  if (!strcmp(buffer, "RAW")) {
+    outputMode = 'R';
+  }
+
+  if (!strcmp(buffer, "SETMODEUSB")) {
+    outputMode = 'G';
+  }
+
 }
 
 void testRoutines() {
@@ -700,9 +739,10 @@ void testRoutines() {
 void moduleTranslationTest() {
   SerialTinyUSB.write("Test #2: Module translation \n");
   SerialTinyUSB.write("A hard coded input buffer is going to be treated as if it were entered.\n");
-
-  char testMapping[2][4];  //manual buffer setting put in a single iteration loop just so I can fold it
-  uint8_t testBuffer[4][8];
+  SerialTinyUSB.write("Note: This TEST is currently disabled because it sometimes crashes.\n");
+/*
+  static char testMapping[2][4];  //manual buffer setting put in a single iteration loop just so I can fold it
+  static uint8_t testBuffer[4][8];
   uint8_t expectedResults[4][8];
 
   uint8_t *flattenedTest = &testBuffer[0][0];
@@ -766,11 +806,13 @@ void moduleTranslationTest() {
   translateBuffer(testMapping, testBuffer);
 
   SerialTinyUSB.write(flattenedTest, 48);
-  if (!strcmp((char *)flattenedTest, (char *)flattenedExpected)) {
+  if (memcmp(flattenedTest, flattenedExpected,48)){
     SerialTinyUSB.write("\n FAIL");
   } else {
     SerialTinyUSB.write("\n PASS");
   }
+  */
+
 }
 
 void reportSavedConfigs() {
@@ -791,6 +833,12 @@ void reportInstalledModules() {
     installed[i] = mapping[0][i];
   }
   SerialTinyUSB.write(installed, 4);
+}
+
+void clearSerial(Stream* serial){
+  while(serial->available()>0){
+    serial->read();
+  }
 }
 
 void moduleDetectionTest() {
