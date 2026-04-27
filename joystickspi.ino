@@ -1,4 +1,6 @@
 #include <SPI.h>
+#include <EEPROM.h>
+#include <avr/wdt.h>
 
 /*
 joystick module written for the MH-ET attiny88 (88 in a QFN on a breakout board)
@@ -17,9 +19,13 @@ XXXX XXXB YYYY YYYP
 identifies itself with the byte 'J' if prompted by the command for identification, 'X'
 */
 
-uint8_t volatile initialData[2];
-uint8_t volatile finalData[2];
-uint8_t volatile byteToSend = 0;;
+int8_t volatile initialData[2];
+int8_t volatile finalData[2];
+uint8_t volatile byteToSend = 0;
+
+volatile bool calibrate = false;
+int8_t xOffset = 0;
+int8_t yOffset = 0;
 
 
 void setup() {
@@ -52,6 +58,7 @@ void setup() {
   PRR &= ~_BV(PRADC);
 
   //set ADC clock to 1MHz (or specifically 1/16 the main clock but this is made for a 16MHz clocked MCU)
+  //the production model runs at 8MHz so whatever happens happens I guess
   ADCSRA &= ~(_BV(ADPS0) | _BV(ADPS1));
   ADCSRA |= _BV(ADPS2);
   //disable auto trigger, disable interrupt
@@ -73,7 +80,7 @@ void setup() {
   //zero all initial globals
   byteToSend=0;
 
-  for(int i = 0; i < 4; i++){
+  for(int i = 0; i < 2; i++){
   initialData[i] = 0;
   finalData[i] = 0;
   }
@@ -81,6 +88,13 @@ void setup() {
   //set up sleep
   SMCR |= _BV(SE);
   SMCR &= ~0x06;
+
+  //disable wdt
+  wdt_disable();
+
+  //recall offsets
+  xOffset = EEPROM.read(0);
+  yOffset = EEPROM.read(1);
 
   //enable interrupts
   sei();
@@ -93,8 +107,12 @@ void loop(){
   //The final transmission buffer that gets transmitted and the initial buffer that's constructed first are kept separate so if multiple requests come before the buffer is done being prepared it will just
   //send a duplicate of the last buffer, honestly at the speeds this is happening this shouldn't actually affect the user's experience
 
-  setX(); //Read the X axis to the initial buffer
-  setY(); //Read the Y axis to the initial buffer
+  if(calibrate){
+    recalibrate();
+  }
+
+  initialData[0] = setX() - xOffset; //Read the X axis to the initial buffer
+  initialData[1] = setY() - yOffset; //Read the Y axis to the initial buffer
   setButton(); //Set the LSB of the X byte for if the pushbutton has been hit or not
   parity(initialData); //run the parity calculation function on the intermediate buffer, write to LSB of Y byte
   transferDataToSPI(); //Write the initial buffer to the final buffer once preparation is done 
@@ -106,17 +124,21 @@ void loop(){
 void setButton(){
     if(PINC & _BV(2)){ //indicate if the built in button on the joystick's been pressed
     initialData[0] |= _BV(0);
+  } else{
+    initialData[0] &= ~_BV(0);
   }
 }
 
 void transferDataToSPI(){
+  cli();
   for(int i = 0; i < 2; i++){ //put finished data in the output buffer for SPI to look at
     finalData[i] = initialData[i];
   }
+  sei();
 }
 
 
-void parity(volatile uint8_t* outputBuffer){ //calculates and sets parity
+void parity(volatile int8_t* outputBuffer){ //calculates and sets parity
   int num1s = 0;
   for(int i = 0; i < 2; i++) { //for all both bytes in the buffer
     for(int j = 0; j < 8; j++){ //iterate through their 8 bits each
@@ -130,18 +152,18 @@ void parity(volatile uint8_t* outputBuffer){ //calculates and sets parity
   }
 }
 
-uint8_t setX(){
+int8_t setX(){
   ADMUX &= ~_BV(0); //switch the channel to ADC0
   ADCSRA |= _BV(ADSC); //start the ADC
-  while(!(ADCSRA & ~_BV(ADIF))); //spin until the conversion is done
-  initialData[0]=ADCH;
+  while(ADCSRA & _BV(ADSC)); //spin until the conversion is done
+  return ADCH - 128;
 }
 
-uint8_t setY(){
-  ADMUX &= ~_BV(0); //switch the channel to ADC1
+int8_t setY(){
+  ADMUX |= _BV(0); //switch the channel to ADC1
   ADCSRA |= _BV(ADSC); //start the ADC
-  while(!(ADCSRA & ~_BV(ADIF))); //spin until the conversion is done
-  initialData[1]=ADCH;
+  while(ADCSRA & _BV(ADSC)); //spin until the conversion is done
+  return ADCH - 128;
 }
 
 void identify(){
@@ -152,6 +174,22 @@ void inputRead(){
   SPDR = finalData[byteToSend=0];
 }
 
+void recalibrate(){
+  int32_t xTotal = 0;
+  int32_t yTotal = 0;
+  uint8_t samples = 16;
+
+  for(uint8_t i = 0; i < samples; i++){
+    xTotal += setX();
+    yTotal += setY();
+  }
+  xOffset = (xTotal/samples);
+  yOffset = (yTotal/samples);
+  EEPROM.write(0,xOffset);
+  EEPROM.write(1,yOffset);
+  calibrate = false;
+}
+
 ISR(SPI_STC_vect){
     char incoming = SPDR; // read incoming byte
     switch(incoming){
@@ -160,6 +198,9 @@ ISR(SPI_STC_vect){
     break;
     case 'R':
     inputRead(); //Set byteToSend to 0 and load first byte into the SPI buffer
+    break;
+    case 'C':
+    calibrate = true;
     break;
     default:
     if(byteToSend>1){ //if all the data in the buffer's been sent start sending error bytes

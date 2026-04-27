@@ -1,4 +1,5 @@
 #include <SPI.h>
+#include <avr/wdt.h>
 
 /*
 4 button module written for the MH-ET attiny88 (88 in a QFN on a breakout board)
@@ -36,6 +37,9 @@ void setup() {
   SPCR |= _BV(SPE) | _BV(SPIE); //Enable SPI logic
   SPCR &= ~_BV(MSTR); //Mode to slave
   SPDR = 0x0F; //I don't like doing all 0s because it looks the same as a dead line and I learned the hard way to not use any vals that could be ASCII 
+
+  //disable wdt because I don't know what else in here could be causing sudden reboots other than this or a hardware error
+  wdt_disable();
 
   //set up sleep
   SMCR |= _BV(SE);
